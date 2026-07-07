@@ -63,8 +63,28 @@ things that made it work:
 - **`--whole-archive`** on the vendor libs so their `.dw_drivers` driver-registration
   structs are pulled in (else the radio never registers a driver).
 
-Not yet validated on hardware: flash `cli-firmware.hex` via the J-Link and confirm
-the CLI console responds (factory backup + `firmware/cli.hex` are the safety net).
+### Hardware test (2026-07-07): builds + flashes, boots partway, doesn't reach USB
+Flashed `cli-firmware.hex` via J-Link (mass_erase + program + verify → **Verified
+OK**). On boot:
+- Correct reset vector (SP = 0x20020000) and, after a clean flash, `.data` copies
+  and `.bss` zeroes correctly (verified `init_array[0]` in RAM = `frame_dummy`).
+  (An earlier "erased .data" reading was a glitch from probing flash while the CPU
+  was wedged in a fault — the flash image is fine.)
+- BUT the native-USB console (J20, Nordic VID 0x1915) **never enumerates** on any
+  host, and the CPU sits in an ambiguous halt state → the image **hangs/faults
+  before USB/app init**. So there are more toolchain-porting bugs beyond data-init
+  (candidates: FPU/CPACR enable, FreeRTOS heap/stack sizing, `_start`/crt0 vs the
+  Nordic startup's `__STARTUP_CLEAR_BSS`, or a prebuilt-lib assumption).
+- **Board restored to the vendor `cli.hex`** (boots fine, J20 console responds,
+  version 0.1.1-221028). The from-scratch image is a proven-buildable
+  proof-of-concept, not yet a working boot.
+
+**Takeaway:** the Pi *build* path is real (the big unknown — solved). But getting a
+fully-booting image is more embedded debugging; **SES-on-Mac** (which builds the
+project exactly as shipped) is the lower-risk path to a *working* image if the
+boot bugs prove stubborn. Debug tooling note: OpenOCD `mdw`/`reg` output didn't
+come through in batch mode here — use `dump_image` to read memory, and expect
+"target in unknown state" when the app is sleeping/faulted.
 
 ## Firmware architecture (either build path)
 
