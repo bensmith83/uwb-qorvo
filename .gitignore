@@ -1,0 +1,26 @@
+# --- Python ---
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# --- Firmware build scratch + large vendor downloads (get from Qorvo) ---
+.fwbuild/
+fw-downloads/
+
+# --- Vendor material we should not redistribute (download from Qorvo) ---
+# Qorvo's copyrighted SDK docs and prebuilt images. Keep local, not on GitHub.
+docs/vendor/
+firmware/*.hex
+firmware/*.bin
+
+# --- iOS / Xcode (for when the app is built) ---
+ios/**/xcuserdata/
+ios/**/*.xcuserstate
+ios/**/DerivedData/
+*.xcworkspace/xcuserdata/
+
+# --- misc ---
+*.log
+.DS_Store
+scratchpad/

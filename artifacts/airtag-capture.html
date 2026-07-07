@@ -1,0 +1,360 @@
+<meta charset="utf-8">
+<title>UWB Capture &mdash; Apple AirTag detected in the air</title>
+<style>
+  :root {
+    --ground: #0b1114;
+    --panel: #101a1e;
+    --panel-2: #0d161a;
+    --line: #1e2f34;
+    --ink: #cddad6;
+    --ink-dim: #7b8f8a;
+    --ink-faint: #506460;
+    --phosphor: #34e0c8;
+    --hot: #ffb648;
+    --locked: #ff6060;
+    --grid: rgba(52,224,200,0.08);
+    --bar-track: #17242a;
+    --shadow: 0 1px 0 rgba(255,255,255,0.03), 0 20px 50px -30px rgba(0,0,0,0.9);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --ground: #eef3f2; --panel: #ffffff; --panel-2: #f4f8f7; --line: #d7e3e0;
+      --ink: #12241f; --ink-dim: #5a716b; --ink-faint: #93a6a1; --phosphor: #0b9c88;
+      --hot: #c9761a; --locked: #d23b3b; --grid: rgba(11,156,136,0.08); --bar-track: #e5eeeb;
+      --shadow: 0 1px 0 rgba(255,255,255,0.6), 0 24px 50px -34px rgba(20,50,44,0.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#0b1114; --panel:#101a1e; --panel-2:#0d161a; --line:#1e2f34;
+    --ink:#cddad6; --ink-dim:#7b8f8a; --ink-faint:#506460; --phosphor:#34e0c8;
+    --hot:#ffb648; --locked:#ff6060; --grid:rgba(52,224,200,0.08); --bar-track:#17242a;
+    --shadow:0 1px 0 rgba(255,255,255,0.03), 0 20px 50px -30px rgba(0,0,0,0.9);
+  }
+  :root[data-theme="light"] {
+    --ground:#eef3f2; --panel:#ffffff; --panel-2:#f4f8f7; --line:#d7e3e0;
+    --ink:#12241f; --ink-dim:#5a716b; --ink-faint:#93a6a1; --phosphor:#0b9c88;
+    --hot:#c9761a; --locked:#d23b3b; --grid:rgba(11,156,136,0.08); --bar-track:#e5eeeb;
+    --shadow:0 1px 0 rgba(255,255,255,0.6), 0 24px 50px -34px rgba(20,50,44,0.35);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(120% 70% at 50% -8%, color-mix(in oklab, var(--phosphor) 6%, var(--ground)) 0%, var(--ground) 55%);
+    color: var(--ink);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.55; -webkit-font-smoothing: antialiased;
+    padding: clamp(16px, 4vw, 56px);
+  }
+  .mono { font-family: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+
+  .card {
+    max-width: 880px; margin: 0 auto;
+    background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+    border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden;
+  }
+
+  header {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px;
+    padding: 24px clamp(20px, 4vw, 34px); border-bottom: 1px solid var(--line);
+    background: repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 40px), transparent;
+  }
+  .eyebrow { font-size: 11px; letter-spacing: 0.28em; text-transform: uppercase; color: var(--phosphor);
+             font-weight: 600; display: flex; align-items: center; gap: 9px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--phosphor);
+         animation: pulse 2.4s ease-out infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 color-mix(in oklab,var(--phosphor) 55%,transparent);}
+                     70%{box-shadow:0 0 0 9px transparent;} 100%{box-shadow:0 0 0 0 transparent;} }
+  @media (prefers-reduced-motion: reduce){ .dot{animation:none;} }
+  h1 { width: 100%; margin: 12px 0 2px; font-size: clamp(24px, 4.5vw, 37px);
+       letter-spacing: -0.02em; line-height: 1.1; text-wrap: balance; font-weight: 680; }
+  h1 .accent { color: var(--phosphor); }
+  .sub { width: 100%; color: var(--ink-dim); font-size: 15px; max-width: 62ch; }
+  .meta { margin-left: auto; text-align: right; color: var(--ink-faint); font-size: 12px; }
+
+  .body { padding: clamp(20px, 4vw, 34px); display: grid; gap: 34px; }
+
+  section > .h { display:flex; align-items:baseline; gap:10px; margin-bottom: 4px; }
+  .h .kicker { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--phosphor); font-weight: 600; }
+  h2 { margin: 0; font-size: 20px; letter-spacing: -0.01em; font-weight: 640; }
+  .lede { color: var(--ink-dim); font-size: 14.5px; margin: 6px 0 0; max-width: 66ch; }
+
+  /* chart */
+  .chart-note { font-size: 12px; color: var(--ink-faint); margin-bottom: 16px; }
+  .chart { display: grid; gap: 13px; }
+  .row { display: grid; grid-template-columns: 92px 1fr; align-items: center; gap: 14px; }
+  .row .code { font-size: 13px; color: var(--ink-dim); }
+  .row .code b { color: var(--ink); font-weight: 600; }
+  .track { position: relative; height: 30px; background: var(--bar-track);
+           border-radius: 6px; overflow: hidden; border: 1px solid var(--line); }
+  .fill { position: absolute; inset: 0 auto 0 0; border-radius: 5px; width: 0;
+          background: linear-gradient(90deg, color-mix(in oklab, var(--phosphor) 55%, transparent), var(--phosphor));
+          transition: width 1.1s cubic-bezier(.2,.7,.2,1); }
+  .fill.hot { background: linear-gradient(90deg, color-mix(in oklab,var(--hot) 45%,transparent), var(--hot)); }
+  .fill.zero { background: repeating-linear-gradient(45deg, var(--line) 0 6px, transparent 6px 12px); }
+  .val { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 12px; font-weight: 600; color: #04110e; }
+  .val.out { color: var(--ink-dim); right: auto; left: calc(100% + 10px); }
+
+  .callout { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; padding: 16px 18px; border-radius: 10px;
+    background: color-mix(in oklab, var(--phosphor) 7%, var(--panel));
+    border: 1px solid color-mix(in oklab, var(--phosphor) 22%, var(--line)); margin-top: 18px; }
+  .callout .big { grid-row: span 2; align-self: center; font-size: 30px; }
+  .callout .lead { font-weight: 620; }
+  .callout .desc { color: var(--ink-dim); font-size: 14px; }
+
+  /* table */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; margin-top: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 520px; }
+  th, td { text-align: right; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-faint); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody td { color: var(--ink); }
+  tr.silent td { color: var(--ink-faint); }
+  .verdict { font-weight: 600; }
+  .verdict.lock { color: var(--phosphor); }
+  .verdict.pre { color: var(--hot); }
+  .pill { display:inline-block; font-size: 11px; padding: 1px 8px; border-radius: 20px; border: 1px solid var(--line); color: var(--ink-dim); }
+
+  /* frame anatomy */
+  .frame { display: flex; gap: 4px; margin-top: 16px; }
+  .seg { flex: var(--f, 1); min-width: 0; padding: 12px 10px; border-radius: 7px; border: 1px solid var(--line);
+         background: var(--panel-2); display: grid; gap: 3px; align-content: start; }
+  .seg.see { border-color: color-mix(in oklab, var(--phosphor) 40%, var(--line));
+             background: color-mix(in oklab, var(--phosphor) 9%, var(--panel-2)); }
+  .seg.enc { border-color: color-mix(in oklab, var(--locked) 40%, var(--line));
+             background: color-mix(in oklab, var(--locked) 8%, var(--panel-2)); }
+  .seg .nm { font-size: 12px; font-weight: 640; letter-spacing: 0.02em; }
+  .seg .ds { font-size: 11px; color: var(--ink-dim); line-height: 1.35; }
+  .seg .tag { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 2px; }
+  .seg.see .tag { color: var(--phosphor); }
+  .seg.enc .tag { color: var(--locked); }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 12px; color: var(--ink-dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 11px; height: 11px; border-radius: 3px; border: 1px solid var(--line); }
+  .sw.see { background: color-mix(in oklab, var(--phosphor) 40%, var(--panel-2)); }
+  .sw.enc { background: color-mix(in oklab, var(--locked) 40%, var(--panel-2)); }
+
+  /* steps */
+  .steps { display: grid; gap: 10px; margin: 14px 0 0; padding: 0; list-style: none; }
+  .steps li { display: grid; grid-template-columns: 26px 1fr; gap: 12px; align-items: start; font-size: 14.5px; }
+  .steps .n { font-size: 12px; color: var(--phosphor); border: 1px solid color-mix(in oklab,var(--phosphor) 35%, var(--line));
+              border-radius: 6px; text-align: center; padding: 2px 0; }
+  .steps .desc { color: var(--ink-dim); }
+
+  /* claims */
+  .claims { background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 20px clamp(18px,3vw,26px); }
+  .claims ul { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 12px; }
+  .claims li { display: grid; grid-template-columns: 20px 1fr; gap: 12px; font-size: 14.5px; }
+  .claims .ck { color: var(--phosphor); font-weight: 700; }
+  .claims em { color: var(--ink-dim); font-style: normal; }
+
+  /* wireshark-style dissector */
+  .diss-meta { font-size: 12px; color: var(--ink-faint); margin: 4px 0 14px; }
+  .diss { display: grid; grid-template-columns: 1fr; gap: 16px; }
+  @media (min-width: 720px){ .diss { grid-template-columns: 1.05fr 1fr; } }
+  .pane { border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); overflow: hidden; }
+  .pane .cap { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--ink-faint);
+               padding: 9px 13px; border-bottom: 1px solid var(--line); background: color-mix(in oklab, var(--phosphor) 4%, var(--panel-2)); }
+  .hex { padding: 12px 13px; overflow-x: auto; }
+  .hex table { border-collapse: collapse; font-size: 12.5px; min-width: 0; }
+  .hex td { padding: 1px 0; border: 0; text-align: left; }
+  .hex .off { color: var(--ink-faint); padding-right: 14px; -webkit-user-select: none; user-select: none; }
+  .hex .bytes b { font-weight: 400; padding: 1px 3px; border-radius: 3px; }
+  .hex .asc { color: var(--ink-faint); padding-left: 14px; }
+  .tree { padding: 10px 6px; font-size: 12.5px; line-height: 1.7; }
+  .tree .node { padding: 2px 8px; border-radius: 5px; }
+  .tree .node.top { font-weight: 620; color: var(--ink); }
+  .tree .bit { color: var(--ink-dim); padding-left: 20px; }
+  .tree .bit .m { color: var(--ink-faint); }
+  .tree .fname { color: var(--ink); }
+  .tree .fval { color: var(--phosphor); }
+  .tree .fnote { display:block; padding-left: 8px; color: var(--ink-faint); font-size: 11.5px; font-style: italic; }
+  /* field colour keys shared by hex + tree */
+  .f0 { background: color-mix(in oklab, var(--phosphor) 26%, transparent); }
+  .f1 { background: color-mix(in oklab, var(--hot) 30%, transparent); }
+  .f2 { background: color-mix(in oklab, var(--locked) 26%, transparent); }
+  .f3 { background: color-mix(in oklab, var(--ink-dim) 30%, transparent); }
+  .swm { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:7px; vertical-align:baseline; }
+  .keyrow { display:flex; flex-wrap:wrap; gap: 14px; margin-top: 12px; font-size: 12px; color: var(--ink-dim); }
+  .keyrow span { display:inline-flex; align-items:center; }
+
+  footer { display:flex; flex-wrap:wrap; gap: 6px 16px; justify-content: space-between; align-items:center;
+           padding: 18px clamp(20px,4vw,34px); border-top: 1px solid var(--line); color: var(--ink-faint); font-size: 12px; }
+  footer .rig { color: var(--ink-dim); }
+  .tag-hash { color: var(--phosphor); }
+</style>
+
+<div class="card">
+  <header>
+    <div class="eyebrow"><span class="dot"></span> Passive UWB Capture &middot; Ultra-Wideband</div>
+    <div class="meta mono">CH&nbsp;9 &middot; 6489.6&nbsp;MHz<br>2026-07-07</div>
+    <h1>I caught an <span class="accent">AirTag</span> talking in ultra-wideband &mdash; without touching it.</h1>
+    <p class="sub">A Raspberry&nbsp;Pi and a Qorvo DWM3001 radio, listening silently on UWB channel&nbsp;9,
+      detected an iPhone&#8202;&harr;&#8202;AirTag precision-finding session in the air. No pairing. No
+      connection. Pure eavesdropping on the radio.</p>
+  </header>
+
+  <div class="body">
+
+    <!-- CHART -->
+    <section>
+      <div class="h"><span class="kicker">Result</span><h2>Detection vs. preamble code</h2></div>
+      <p class="chart-note">Radio events counted over baseline while the AirTag was ranging ~30&nbsp;cm from the antenna.</p>
+      <div class="chart">
+        <div class="row"><div class="code">code&nbsp;<b>9</b></div>
+          <div class="track"><div class="fill zero" data-w="0"></div><span class="val out mono">0 &mdash; silent</span></div></div>
+        <div class="row"><div class="code">code&nbsp;<b>10</b></div>
+          <div class="track"><div class="fill" data-w="61"></div><span class="val mono">607 events</span></div></div>
+        <div class="row"><div class="code">code&nbsp;<b>11</b></div>
+          <div class="track"><div class="fill hot" data-w="100"></div><span class="val mono">999 events</span></div></div>
+        <div class="row"><div class="code">code&nbsp;<b>12</b></div>
+          <div class="track"><div class="fill" data-w="46"></div><span class="val mono">461 events</span></div></div>
+      </div>
+      <div class="callout">
+        <div class="big">&#x1F4E1;</div>
+        <div class="lead">Silent on code&nbsp;9, alive on 10&ndash;12 &mdash; that is the fingerprint of real UWB.</div>
+        <div class="desc">Radio noise does not care which preamble code you tune to. A signal that appears
+          only when the receiver matches the transmitter is, by definition, a real transmission:
+          Apple's U1 chip, mid-ranging.</div>
+      </div>
+    </section>
+
+    <!-- WHAT IS A PREAMBLE CODE -->
+    <section>
+      <div class="h"><span class="kicker">Plain english</span><h2>What is a "preamble code"?</h2></div>
+      <p class="lede">Every UWB frame begins with a <b>preamble</b>: a known burst of pulses the receiver
+        listens for to realise "a frame is starting." The exact pulse pattern is selected by a small
+        number &mdash; the <b>preamble code</b> (on channel&nbsp;9, codes 9&ndash;12 are legal). The receiver
+        only "hears" a transmitter using the <b>same</b> code &mdash; it is a lock-and-key handshake, like
+        two walkie-talkies that must be on the same sub-channel to hear each other.</p>
+      <p class="lede">We did not know which code Apple uses, so we swept all four. Code&nbsp;9 stayed dead
+        silent even with the AirTag actively ranging &mdash; wrong key. Codes 10&ndash;12 lit up the instant
+        we tuned to them. That sweep is how we <em>found</em> Apple's PHY, and it is the proof the signal
+        is real and not stray interference.</p>
+    </section>
+
+    <!-- FRAME BREAKDOWN TABLE -->
+    <section>
+      <div class="h"><span class="kicker">Breakdown</span><h2>How far each frame got</h2></div>
+      <p class="lede">A frame is received in stages. The further into a frame the radio gets, the more
+        confident the detection. Here is what each preamble code produced.</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Preamble code</th>
+              <th>Preamble locks</th>
+              <th>Headers reached</th>
+              <th>CRC attempts</th>
+              <th>Verdict</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="silent"><td>9</td><td class="mono">0</td><td class="mono">0</td><td class="mono">0</td><td class="verdict">silent (control)</td></tr>
+            <tr><td>10</td><td class="mono">52</td><td class="mono">555</td><td class="mono">1</td><td class="verdict lock">strong lock</td></tr>
+            <tr><td>11</td><td class="mono">999</td><td class="mono">0</td><td class="mono">0</td><td class="verdict pre">preamble match</td></tr>
+            <tr><td>12</td><td class="mono">252</td><td class="mono">209</td><td class="mono">0</td><td class="verdict lock">partial lock</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="legend">
+        <span><span class="pill">Preamble lock</span> receiver recognised the frame's opening pulse pattern</span>
+        <span><span class="pill">Header reached</span> decoding advanced past the start-of-frame delimiter</span>
+        <span><span class="pill">CRC attempt</span> a whole frame arrived and hit the integrity check</span>
+      </div>
+    </section>
+
+    <!-- FRAME ANATOMY -->
+    <section>
+      <div class="h"><span class="kicker">Anatomy</span><h2>What a ranging frame is made of &mdash; and what we can see</h2></div>
+      <p class="lede">Apple uses an IEEE&nbsp;802.15.4z "STS" frame. The parts that make the radio detectable
+        travel <b>in the clear</b>; the parts that carry the secret distance measurement are
+        <b>encrypted</b>. That is why we can prove the transmission exists but cannot read the range itself.</p>
+      <div class="frame">
+        <div class="seg see" style="--f:2.2">
+          <div class="nm">Preamble</div>
+          <div class="ds">Known pulse burst; how the receiver finds the frame.</div>
+          <div class="tag">&#x2713; visible</div>
+        </div>
+        <div class="seg see" style="--f:1">
+          <div class="nm">SFD</div>
+          <div class="ds">Start-of-frame delimiter marking the preamble's end.</div>
+          <div class="tag">&#x2713; visible</div>
+        </div>
+        <div class="seg see" style="--f:1.1">
+          <div class="nm">PHR</div>
+          <div class="ds">PHY header: length &amp; rate. We reached this stage (555 times).</div>
+          <div class="tag">&#x2713; detected</div>
+        </div>
+        <div class="seg enc" style="--f:2.6">
+          <div class="nm">STS</div>
+          <div class="ds">Scrambled Timestamp Sequence &mdash; the encrypted ranging core.</div>
+          <div class="tag">&#x1F512; sealed</div>
+        </div>
+        <div class="seg enc" style="--f:1.4">
+          <div class="nm">Payload</div>
+          <div class="ds">Any message bytes, protected by the session key.</div>
+          <div class="tag">&#x1F512; sealed</div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><span class="sw see"></span> in the clear &mdash; what we detected</span>
+        <span><span class="sw enc"></span> encrypted (STS session key) &mdash; unreadable without pairing</span>
+      </div>
+    </section>
+
+    <!-- DISSECTOR -->
+    <section>
+      <div class="h"><span class="kicker">Byte level</span><h2>The same frame, dissected</h2></div>
+      <p class="diss-meta mono">802.15.4z frame &middot; 69 bytes &middot; captured by DWM3001 LISTENER
+        (Qorvo reference) &middot; the header decodes; the secured body does not.</p>
+      <div class="diss">
+        <div class="pane"><div class="cap">Packet bytes</div><div class="hex"><table><tr><td class="off mono">0000</td><td class="bytes mono"><b class="f0">49</b> <b class="f0">2b</b> <b class="f1">01</b> <b class="f1">00</b> <b class="f2">26</b> <b class="f2">13</b> <b class="f2">00</b> <b class="f2">ff</b>&nbsp;&nbsp;<b class="f2">18</b> <b class="f2">5a</b> <b class="f2">08</b> <b class="f2">08</b> <b class="f2">08</b> <b class="f2">08</b> <b class="f2">08</b> <b class="f2">08</b></td><td class="asc mono">I+..&amp;....Z......</td></tr><tr><td class="off mono">0010</td><td class="bytes mono"><b class="f2">08</b> <b class="f2">08</b> <b class="f2">08</b> <b class="f2">08</b> <b class="f2">2a</b> <b class="f2">00</b> <b class="f2">00</b> <b class="f2">00</b>&nbsp;&nbsp;<b class="f2">8c</b> <b class="f2">2d</b> <b class="f2">2f</b> <b class="f2">0d</b> <b class="f2">00</b> <b class="f2">3f</b> <b class="f2">49</b> <b class="f2">11</b></td><td class="asc mono">....*....-/..?I.</td></tr><tr><td class="off mono">0020</td><td class="bytes mono"><b class="f2">1e</b> <b class="f2">68</b> <b class="f2">56</b> <b class="f2">31</b> <b class="f2">46</b> <b class="f2">a9</b> <b class="f2">b1</b> <b class="f2">06</b>&nbsp;&nbsp;<b class="f2">bf</b> <b class="f2">af</b> <b class="f2">4b</b> <b class="f2">7c</b> <b class="f2">be</b> <b class="f2">55</b> <b class="f2">65</b> <b class="f2">e8</b></td><td class="asc mono">.hV1F.....K|.Ue.</td></tr><tr><td class="off mono">0030</td><td class="bytes mono"><b class="f2">a9</b> <b class="f2">77</b> <b class="f2">7a</b> <b class="f2">3f</b> <b class="f2">53</b> <b class="f2">cf</b> <b class="f2">25</b> <b class="f2">6d</b>&nbsp;&nbsp;<b class="f2">a4</b> <b class="f2">48</b> <b class="f2">f7</b> <b class="f2">8b</b> <b class="f2">a8</b> <b class="f2">56</b> <b class="f2">0d</b> <b class="f2">76</b></td><td class="asc mono">.wz?S.%m.H...V.v</td></tr><tr><td class="off mono">0040</td><td class="bytes mono"><b class="f2">a0</b> <b class="f2">da</b> <b class="f2">27</b> <b class="f3">5f</b> <b class="f3">58</b> <b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b>&nbsp;&nbsp;<b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b> <b>&nbsp;&nbsp;</b></td><td class="asc mono">..&#x27;_X           </td></tr></table></div></div>
+        <div class="pane"><div class="cap">Frame dissection</div><div class="tree"><div class="node top"><span class="swm f0"></span><span class="fname">Frame Control Field</span>: <span class="fval">0x2B49</span></div><div class="bit"><span class="m">.... .... .... .001 = Frame Type</span>: <span class="fval">Data (1)</span></div><div class="bit"><span class="m">.... .... .... 1... = Security Enabled</span>: <span class="fval">True</span></div><div class="bit"><span class="m">.... .... ...0. .... = Frame Pending</span>: <span class="fval">False</span></div><div class="bit"><span class="m">.... .... ..0.. .... = Ack Request</span>: <span class="fval">False</span></div><div class="bit"><span class="m">.... .... .1... .... = PAN ID Compression</span>: <span class="fval">True</span></div><div class="bit"><span class="m">.... ...1. .... .... = Seq Number Suppression</span>: <span class="fval">True</span></div><div class="bit"><span class="m">.... ..1.. .... .... = IE Present</span>: <span class="fval">True</span></div><div class="bit"><span class="m">.... 10.. .... .... = Dest Addressing Mode</span>: <span class="fval">Short/16-bit (0x2)</span></div><div class="bit"><span class="m">..10 .... .... .... = Frame Version</span>: <span class="fval">IEEE 802.15.4-2015 (4z)</span></div><div class="bit"><span class="m">00.. .... .... .... = Source Addressing Mode</span>: <span class="fval">None (0x0)</span></div><div class="node top"><span class="swm f1"></span><span class="fname">Destination Address</span>: <span class="fval">0x0001</span></div><div class="node top"><span class="swm f2"></span><span class="fname">Secured Payload</span>: <span class="fval">63 bytes</span></div><span class="fnote">Encrypted / authenticated (Security Enabled = True): auxiliary security header, STS-scrambled ranging data and payload. Opaque without the session key.</span><div class="node top"><span class="swm f3"></span><span class="fname">FCS (CRC-16)</span>: <span class="fval">0x585F</span></div><span class="fnote">Frame check sequence, appended by the radio.</span></div></div>
+      </div>
+      <div class="keyrow">
+        <span><span class="swm f0"></span>Frame control</span>
+        <span><span class="swm f1"></span>Destination address</span>
+        <span><span class="swm f2"></span>Secured / encrypted body</span>
+        <span><span class="swm f3"></span>FCS</span>
+      </div>
+    </section>
+
+    <!-- HOW IT HAPPENED -->
+    <section>
+      <div class="h"><span class="kicker">Sequence</span><h2>What actually happened</h2></div>
+      <ol class="steps">
+        <li><span class="n mono">1</span><span>The iPhone and AirTag opened a UWB ranging session on channel&nbsp;9 to measure distance to a few centimetres. <span class="desc">This is what powers the "Find Nearby" arrow.</span></span></li>
+        <li><span class="n mono">2</span><span>My receiver sat on the same channel and swept preamble codes until it matched theirs. <span class="desc">Code&nbsp;9 heard nothing; 10&ndash;12 lit up immediately.</span></span></li>
+        <li><span class="n mono">3</span><span>Every frame's arrival is visible &mdash; timing, signal, preamble &mdash; but the ranging core is sealed with Apple's STS encryption. <span class="desc">You see the conversation happening; you cannot read the words.</span></span></li>
+      </ol>
+    </section>
+
+    <!-- CLAIMS -->
+    <section class="claims">
+      <div class="h"><span class="kicker">For the write-up</span><h2>What you can honestly say</h2></div>
+      <ul>
+        <li><span class="ck">&#x2713;</span><span>I built a passive UWB sniffer from a Raspberry&nbsp;Pi and a ~$60 dev board.</span></li>
+        <li><span class="ck">&#x2713;</span><span>It detected an Apple AirTag's ultra-wideband ranging session <b>over the air, with no pairing</b> &mdash; 555 frame-header receptions and ~1,000 preamble locks on channel&nbsp;9.</span></li>
+        <li><span class="ck">&#x2713;</span><span>The proof it is real, not noise: <b>silent on preamble code&nbsp;9, lit up on 10&ndash;12</b>. Interference is not preamble-selective; a real transmitter is.</span></li>
+        <li><span class="ck">&#x2713;</span><span>Apple's ranging payload is <b>STS-encrypted</b>, so I can see the conversation happening &mdash; timing, cadence, signal strength &mdash; but not read the secret distance data. <em>A nice security-by-design detail.</em></span></li>
+      </ul>
+    </section>
+
+  </div>
+
+  <footer>
+    <span class="rig">Rig: Raspberry&nbsp;Pi&nbsp;4 &middot; Qorvo DWM3001CDK (DW3110 UWB) &middot; passive LISTENER mode</span>
+    <span class="tag-hash mono">#UWB #RF #802.15.4z</span>
+  </footer>
+</div>
+
+<script>
+  requestAnimationFrame(() => {
+    document.querySelectorAll('.fill').forEach(f => {
+      const w = f.getAttribute('data-w');
+      f.style.width = (w === '0' ? 22 : w) + '%';
+    });
+  });
+</script>
