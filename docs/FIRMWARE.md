@@ -35,8 +35,18 @@ ARM-host port**, so it **cannot run on this Pi 4** (aarch64). Two real paths:
    startup instead of SES's `flash_placement.xml`, build with the installed
    `arm-none-eabi-gcc`.
    - Pro: fully autonomous on the Pi; reproducible in CI.
-   - Con: real effort to get 149 SDK files + FreeRTOS + USB + mbedtls linking,
-     then adding the SoftDevice shifts the linker layout again.
+   - Con: **high risk.** The 149 files include **2 prebuilt vendor `.a` libs**
+     (UWB stack + DW3xxx driver, built with SES's toolchain — ABI/newlib
+     mismatch risk with a different GCC), **SES-specific startup** (`thumb_crt0.s`
+     from the SES install + `ses_startup_nrf52833.s`), and an SES
+     `flash_placement.xml` to convert. Plus FreeRTOS + USB + mbedtls. Real
+     chance of not converging.
+
+**Decision (2026-07-07): path 1 (SES on the Mac).** Lower risk, uses the project
+as shipped. Division of labour: **firmware source is written/versioned on the Pi**
+(this repo); **compiled in SES on the Mac**; **flashed via the Pi's J-Link**.
+The parsed project facts (149 files, 81 include dirs, defines, prebuilt libs) are
+captured here so the source work can proceed without the Mac.
 
 ## Firmware architecture (either build path)
 
