@@ -63,14 +63,23 @@ FLASH_TABLES = r"""
 # the vendor SES placement (FCONFIG_START=0x1E000, INIT_START=0x1F000,
 # vectors at 0).  Inlining it in .text made the firmware erase its own
 # .dw_drivers table on first config save -> BusFault in uwb_init.
-MEMORY_MAP = """MEMORY
-{
-  VECTORS (rx) : ORIGIN = 0x0, LENGTH = 0x1000
+#
+# For a SoftDevice build, the app vector table moves to the SD flash end
+# (--app-base, e.g. 0x1c000 for S113) and app RAM starts above the SD's RAM
+# reservation (--ram-base, tuned from sd_ble_enable). Code stays at 0x1f000;
+# the vendor map already leaves 0x1000..0x1cfff free for MBR+SoftDevice.
+RAM_END = 0x20020000
+
+
+def memory_map(app_base: int = 0x0, ram_base: int = 0x20000000) -> str:
+    return f"""MEMORY
+{{
+  VECTORS (rx) : ORIGIN = {app_base:#x}, LENGTH = 0x1000
   FCONFIG (r) : ORIGIN = 0x1e000, LENGTH = 0x1000
   FLASH (rx) : ORIGIN = 0x1f000, LENGTH = 0x61000
-  RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 0x20000
+  RAM (rwx) : ORIGIN = {ram_base:#x}, LENGTH = {RAM_END - ram_base:#x}
   CODE_RAM (rwx) : ORIGIN = 0x800000, LENGTH = 0x20000
-}
+}}
 """
 
 # Injected right before the .text output section.
@@ -89,8 +98,28 @@ EARLY_SECTIONS = r"""
 
 """
 
+# nrf_sdh registers its state/BLE/SoC observers via named flash sections
+# (NRF_SECTION_* / nrf_section_iter). Injected before .text, mirroring the
+# Nordic SDK example ld scripts. Harmless when no SoftDevice is linked.
+SDH_TABLES = "".join(f"""
+  .{sec} :
+  {{
+    PROVIDE(__start_{sec} = .);
+    KEEP(*(SORT(.{sec}*)))
+    PROVIDE(__stop_{sec} = .);
+  }} > FLASH
+""" for sec in ("sdh_soc_observers", "sdh_ble_observers", "sdh_req_observers",
+                "sdh_state_observers", "sdh_stack_observers"))
+
 # Injected as its own NOLOAD section in RAM, after .bss.
 RAM_TABLES = r"""
+    .fs_data (NOLOAD) :
+    {
+        PROVIDE(__start_fs_data = .);
+        KEEP(*(.fs_data))
+        PROVIDE(__stop_fs_data = .);
+    } > RAM
+
     .rconfig (NOLOAD) :
     {
         . = ALIGN(4);
@@ -105,16 +134,19 @@ RAM_TABLES = r"""
 """
 
 
-def build_linker_script(mdk: str) -> str:
+def build_linker_script(mdk: str, app_base: int = 0x0,
+                        ram_base: int = 0x20000000) -> str:
     """Merge our custom tables into the SDK's linker script (nrf52833_xxaa.ld +
     nrf_common.ld) and return the combined text."""
     xxaa = open(os.path.join(mdk, "nrf52833_xxaa.ld")).read()
     common = open(os.path.join(mdk, "nrf_common.ld")).read()
     # vendor memory map: vectors at 0, dedicated fconfig page, code at 0x1f000
-    xxaa = re.sub(r'MEMORY\s*\{[^}]*\}', MEMORY_MAP, xxaa, count=1)
+    xxaa = re.sub(r'MEMORY\s*\{[^}]*\}', memory_map(app_base, ram_base),
+                  xxaa, count=1)
     # vectors move to their own region; fconfig to its own erasable page
     common = re.sub(r'\n\s*KEEP\(\*\(\.isr_vector\)\)', '', common, count=1)
-    common = re.sub(r'(\.text :)', EARLY_SECTIONS + r'  \1', common, count=1)
+    common = re.sub(r'(\.text :)', EARLY_SECTIONS + SDH_TABLES + r'  \1',
+                    common, count=1)
     # flash tables: inside .text, right after the .eh_frame keep (before } > FLASH)
     common = re.sub(r'(KEEP\(\*\(\.eh_frame\*\)\))',
                     r'\1\n' + FLASH_TABLES, common, count=1)
@@ -124,11 +156,28 @@ def build_linker_script(mdk: str) -> str:
     return xxaa.replace('INCLUDE "nrf_common.ld"', common)
 
 
-def main() -> int:
-    if len(sys.argv) != 3:
-        print(__doc__)
-        return 2
-    emproj, out_dir = sys.argv[1], sys.argv[2]
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("emproj")
+    ap.add_argument("out_dir")
+    ap.add_argument("--src", action="append", default=[],
+                    help="extra C source to compile into the app")
+    ap.add_argument("--inc", action="append", default=[],
+                    help="extra include directory")
+    ap.add_argument("--define", action="append", default=[],
+                    help="extra preprocessor define (NAME or NAME=VALUE)")
+    ap.add_argument("--wrap", action="append", default=[],
+                    help="symbol to wrap with -Wl,--wrap=")
+    ap.add_argument("--target", default="cli-firmware",
+                    help="output artifact base name")
+    ap.add_argument("--app-base", type=lambda x: int(x, 0), default=0x0,
+                    help="app vector table address (SoftDevice flash end)")
+    ap.add_argument("--ram-base", type=lambda x: int(x, 0),
+                    default=0x20000000,
+                    help="app RAM origin (above the SoftDevice RAM)")
+    args = ap.parse_args(argv)
+    emproj, out_dir = args.emproj, args.out_dir
     ses_dir = os.path.dirname(os.path.abspath(emproj))
     xml = open(emproj, encoding="utf-8", errors="replace").read()
 
@@ -192,25 +241,34 @@ def main() -> int:
     # --- defines ---
     dblob = re.findall(r'c_preprocessor_definitions="([^"]*)"', xml)
     defines = [d.strip() for d in html.unescape(dblob[0]).split(";") if d.strip()] if dblob else []
+    defines.extend(args.define)  # before defaults so --define overrides them
     for extra in ("BOARD_CUSTOM", "FLOAT_ABI_HARD", "CONFIG_GPIO_AS_PINRESET", "__HEAP_SIZE=8192", "__STACK_SIZE=8192"):
         key = extra.split("=")[0]
         if not any(x.split("=")[0] == key for x in defines):
             defines.append(extra)
 
+    c_srcs.extend(args.src)
+    # prepend so e.g. SoftDevice headers shadow the no-SD stand-ins
+    # (drivers_nrf/nrf_soc_nosd ships empty-under-SOFTDEVICE_PRESENT copies
+    # of nrf_error.h/nrf_soc.h/nrf_nvic.h)
+    incs[:0] = [i for i in args.inc if i not in incs]
+
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "merged.ld"), "w") as f:
-        f.write(build_linker_script(mdk))
+        f.write(build_linker_script(mdk, args.app_base, args.ram_base))
     ld = "merged.ld"
 
     mk = os.path.join(out_dir, "Makefile")
     with open(mk, "w") as f:
-        f.write(_render(c_srcs, s_srcs, libs, incs, defines, ld, mdk))
+        f.write(_render(c_srcs, s_srcs, libs, incs, defines, ld, mdk,
+                        target=args.target, wraps=args.wrap))
     print(f"wrote {mk}")
     print(f"  {len(c_srcs)} C, {len(s_srcs)} asm, {len(libs)} libs, {len(incs)} include dirs")
     return 0
 
 
-def _render(c_srcs, s_srcs, libs, incs, defines, ld, mdk) -> str:
+def _render(c_srcs, s_srcs, libs, incs, defines, ld, mdk,
+            target="cli-firmware", wraps=()) -> str:
     cpu = "-mcpu=cortex-m4 -mthumb -mabi=aapcs -mfloat-abi=hard -mfpu=fpv4-sp-d16"
     L = []
     L.append("# Generated by firmware/gen_makefile.py — do not edit by hand.")
@@ -218,7 +276,7 @@ def _render(c_srcs, s_srcs, libs, incs, defines, ld, mdk) -> str:
     L.append("CC = $(PREFIX)gcc")
     L.append("OBJCOPY = $(PREFIX)objcopy")
     L.append("SIZE = $(PREFIX)size")
-    L.append("TARGET = cli-firmware")
+    L.append(f"TARGET = {target}")
     L.append(f"CPU = {cpu}")
     L.append("OPT = -O2 -g3")
     L.append("")
@@ -233,7 +291,7 @@ def _render(c_srcs, s_srcs, libs, incs, defines, ld, mdk) -> str:
     L.append("")
     L.append("CFLAGS = $(CPU) $(OPT) $(INCLUDES) $(DEFINES) \\")
     L.append("  -Wall -ffunction-sections -fdata-sections -fno-strict-aliasing \\")
-    L.append("  -fno-builtin -fshort-enums --std=gnu11")
+    L.append("  -fno-builtin -fshort-enums --std=gnu11 -MMD -MP")
     L.append("ASFLAGS = $(CPU) $(OPT) $(DEFINES) -x assembler-with-cpp")
     L.append(f"LDSCRIPT = {ld}")
     L.append(f"LDFLAGS = $(CPU) -L{mdk} -T$(LDSCRIPT) \\")
@@ -242,7 +300,8 @@ def _render(c_srcs, s_srcs, libs, incs, defines, ld, mdk) -> str:
     # (.dw_drivers driver structs, etc.) are pulled in; KEEP + gc-sections then
     # retains the tables and drops the rest.
     L.append("  -Wl,--start-group -Wl,--whole-archive $(LIBS) -Wl,--no-whole-archive \\")
-    L.append("  -lc -lm -lnosys -Wl,--end-group")
+    wrapflags = " ".join(f"-Wl,--wrap={w}" for w in wraps)
+    L.append(f"  -lc -lm -lnosys -Wl,--end-group {wrapflags}".rstrip())
     L.append("")
     L.append("LIBS = \\")
     for lib in libs:
@@ -264,6 +323,7 @@ def _render(c_srcs, s_srcs, libs, incs, defines, ld, mdk) -> str:
     L.append("$(TARGET).hex: $(TARGET).elf\n\t$(OBJCOPY) -O ihex $< $@")
     L.append("clean:; rm -rf obj $(TARGET).elf $(TARGET).hex $(TARGET).map")
     L.append(".PHONY: all clean")
+    L.append("-include $(OBJ:.o=.d)")
     L.append("")
     return "\n".join(L)
 

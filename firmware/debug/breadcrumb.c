@@ -67,7 +67,20 @@ extern int __real_osKernelStart(void);
 int __wrap_osKernelStart(void)
 {
     mark(0xC0DE0090u);
+#ifdef BLE_BUILD
+    /* SoftDevice + GATT + advertising come up right before the scheduler */
+    extern void ble_app_init(void);
+    ble_app_init();
+    mark(0xC0DE0091u);
+#endif
     return __real_osKernelStart();
+}
+
+/* let other modules stash one diagnostic word (e.g. the app RAM base the
+ * SoftDevice actually requires) where SWD dumps can see it */
+void bread_note(uint32_t v)
+{
+    BREAD[1] = v;
 }
 
 /* runs from __libc_init_array: proves crt0 + data/bss init completed */

@@ -27,6 +27,15 @@ case "${1:-}" in
   cli)
     exec "$0" firmware/cli.hex
     ;;
+  ble)
+    # our BLE build: S113 SoftDevice at 0x0 + app at 0x1C000
+    SD=.fwbuild/DWM3001CDK-DW3_QM33_SDK-FreeRTOS/SDK_BSP/Nordic/NORDIC_SDK_17_1_0/components/softdevice/s113/hex/s113_nrf52_7.2.0_softdevice.hex
+    APP=.fwbuild/build-ble/ble-firmware.hex
+    [[ -s $SD && -s $APP ]] || { echo "Missing $SD or $APP (run firmware/build-ble.sh)"; exit 1; }
+    [[ -s $BACKUP ]] || { echo "Refusing to flash before factory backup exists."; exit 1; }
+    ocd "nrf5 mass_erase; program $SD; program $APP; reset halt; mww 0x2001FFE0 0 8; resume"
+    echo "Flashed S113 + ble-firmware and reset."
+    ;;
   *.hex)
     [[ -s $1 ]] || { echo "Missing file: $1"; exit 1; }
     [[ -s $BACKUP ]] || { echo "Refusing to flash before factory backup exists. Run: tools/flash.sh backup"; exit 1; }
