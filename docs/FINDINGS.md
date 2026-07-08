@@ -32,7 +32,7 @@ passive AirTag detection. Companion to `PLAN.md` (handoff/checklist),
 - **Factory = QANI** (Qorvo Apple Nearby Interaction, FiRa stack, DW3XXX
   driver 06.00.14). Works out of the box with the iOS "Qorvo Nearby
   Interaction" app → live distance to the board. Advertises BLE as
-  `DWM3001CDK (1613B863)`. Full backup taken first:
+  `DWM3001CDK (XXXXXXXX)`. Full backup taken first:
   `firmware/factory-backup.bin` (+ `factory-uicr.bin`); `flash.sh ni`
   restores it.
 - **CLI** (`firmware/cli.hex`, DW3_QM33_SDK CLI-FreeRTOS 0.1.1): UART shell

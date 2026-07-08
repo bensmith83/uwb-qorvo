@@ -24,8 +24,8 @@ User expects us to "figure it out and knock it out of the park."
   **Constraint: max 2-3 parallel background agents (12 caused a lockup).**
 - Board: DWM3001CDK = nRF52833 (BLE SoC) + Qorvo DW3110 UWB transceiver,
   integrated SEGGER J-Link OB.
-- Board's J-Link USB port DID enumerate on this Pi as VID 1366 PID 0105,
-  serial `000760201387`, giving `/dev/ttyACM0` (CDC-ACM bridged to nRF UART),
+- Board's J-Link USB port DID enumerate on this Pi as VID 1366 PID 0105
+  (serial redacted), giving `/dev/ttyACM0` (CDC-ACM bridged to nRF UART),
   then disconnected after 3 s (loose cable / unplugged). **As of writing,
   board is NOT connected — user asked to replug the J-Link micro-USB port.**
 - The board has two micro-USB ports: J9 = J-Link OB (the one we want, also
@@ -68,7 +68,7 @@ Two firmware "personalities" for the board, switchable via pyocd:
 
 ### Firmware acquisition (in progress)
 - Background agent "fw-hunter" is downloading firmware images to
-  `/tmp/claude-1000/-home-pi-xfer-vibin-uwb-qorvo/5d337146-7c51-40ff-908f-24ac2748f1de/scratchpad/fw-downloads/`
+  `<agent scratchpad>/fw-downloads/`
   (Qorvo official downloads may be behind free registration; agent also
   checking GitHub mirrors). Vendored copies + provenance go in `firmware/`.
 - If downloads are login-walled: ask user to fetch from qorvo.com
@@ -84,8 +84,8 @@ Two firmware "personalities" for the board, switchable via pyocd:
 - udev rule added: /etc/udev/rules.d/99-jlink.rules (VID 1366 mode 0666).
 - **Factory firmware = DWM3001CDK-QANI-FreeRTOS** (Qorvo Apple Nearby
   Interaction demo, FiRa stack, DW3XXX driver 06.00.14) — confirmed via
-  strings on flash dump. Board advertises BLE as `DWM3001CDK (1613B863)`
-  (MAC EC:3B:16:13:B8:63). **iPhone path works out of the box** with the
+  strings on flash dump. Board advertises BLE as `DWM3001CDK (XXXXXXXX)`
+  (suffix from its BLE MAC). **iPhone path works out of the box** with the
   "Qorvo Nearby Interaction" App Store app.
 - Factory backup taken BEFORE any flashing:
   `firmware/factory-backup.bin` (512K, md5 acee86a12d34ca21c3c9c338d18d7de6)
@@ -172,7 +172,7 @@ PHE errors). So deliverable = detection evidence, not decoded bytes.
 Raw logs: scratchpad/sweep2.log (the money data), grab10.log.
 
 Shareable artifact BUILT + published:
-artifacts/airtag-capture.html → https://claude.ai/code/artifact/65693c3b-635e-405a-bb0a-1a956ca56d3b
+artifacts/airtag-capture.html (published as a claude.ai artifact)
 (instrument-style capture card, theme-aware, real numbers.)
 
 Open threads / possible next steps:
@@ -284,7 +284,7 @@ iOS field test.
       **Finding: CLI console is ONLY on J20 (native USB CDC), NOT on the
       J-Link CDC (ttyACM0). ttyACM0 stays silent under CLI fw. Blind
       `UART 0/1` over ttyACM0 did nothing. User asked (11:10) to plug a
-      2nd micro-USB cable into J20 (keep J9 too). Watcher b0joml540 waits
+      2nd micro-USB cable into J20 (keep J9 too). A watcher agent waits
       for a second /dev/ttyACM*.** J20 will enumerate as a separate USB
       device (Nordic VID, likely /dev/ttyACM1).
 - [x] Parser TDD'd: uwb_explorer/parser.py (RangingResult/ListenerFrame/
@@ -313,7 +313,7 @@ iOS field test.
 - [ ] **BLOCKED ON HARDWARE: need J20 cable.** Confirmed (twice, incl. DTR
       toggle) the CLI console is silent on the J-Link VCOM (ttyACM0). It is
       only on J20 native USB. User asked to plug a 2nd micro-USB cable into
-      J20 (keep J9 for flashing). Watcher b0joml540 polls for a 2nd
+      J20 (keep J9 for flashing). A watcher agent polls for a 2nd
       /dev/ttyACM*. Until then the dashboard can't talk to real hardware —
       but the whole pipeline is validated against captured/spec formats.
 - [ ] Once J20 up: `./run.sh dash`, hit `l` to sniff, confirm real

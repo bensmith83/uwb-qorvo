@@ -2,7 +2,8 @@
 
 The board's factory firmware is **Qorvo's Apple Nearby Interaction (QANI)
 demo** — it already speaks the Apple NI accessory protocol. Verified: it
-advertises over BLE as `DWM3001CDK (1613B863)`.
+advertises over BLE as `DWM3001CDK (XXXXXXXX)` (suffix derived from the
+chip's BLE MAC, unique per board).
 
 ## Requirements
 
@@ -14,7 +15,7 @@ advertises over BLE as `DWM3001CDK (1613B863)`.
 1. On the iPhone, install **"Qorvo Nearby Interaction"** from the App Store
    (publisher: Qorvo US, Inc. — free).
 2. Open the app with Bluetooth on. It scans for accessories and should list
-   **DWM3001CDK (1613B863)**.
+   **DWM3001CDK (XXXXXXXX)** (your board's own suffix).
 3. Tap it to connect. The app negotiates a UWB session (BLE handshake →
    FiRa ranging) and shows **live distance** to the board, updating several
    times a second.
@@ -32,6 +33,6 @@ advertises over BLE as `DWM3001CDK (1613B863)`.
 ## Troubleshooting
 
 - Board not listed → is another host (the Pi) holding a BLE connection?
-  `bluetoothctl disconnect EC:3B:16:13:B8:63` on the Pi, then rescan.
+  `bluetoothctl disconnect <board MAC>` on the Pi, then rescan.
 - After reflashing back to factory (`tools/flash.sh ni`), the name/ID stays
   the same (derived from chip MAC).
