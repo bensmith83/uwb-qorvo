@@ -1,0 +1,92 @@
+import CoreBluetooth
+import Combine
+
+/// Connects to the Pi's UWB BLE peripheral, subscribes to state notifications,
+/// and republishes them for SwiftUI. Auto-reconnects on drop.
+final class BLEManager: NSObject, ObservableObject {
+    // Must match uwb_explorer/ble.py
+    static let serviceUUID = CBUUID(string: "6e5f0001-b5a3-f393-e0a9-e50e24dcca9e")
+    static let charUUID    = CBUUID(string: "6e5f0002-b5a3-f393-e0a9-e50e24dcca9e")
+
+    @Published var state = UWBState.idle
+    @Published var connection = "Starting…"
+    @Published var isConnected = false
+    /// Recent per-notification hit counts, for the sparkline.
+    @Published var history: [Int] = []
+
+    private var central: CBCentralManager!
+    private var peripheral: CBPeripheral?
+
+    override init() {
+        super.init()
+        central = CBCentralManager(delegate: self, queue: nil)
+    }
+
+    private func startScan() {
+        guard central.state == .poweredOn else { return }
+        isConnected = false
+        connection = "Scanning for UWB…"
+        central.scanForPeripherals(withServices: [Self.serviceUUID], options: nil)
+    }
+}
+
+extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
+    func centralManagerDidUpdateState(_ c: CBCentralManager) {
+        switch c.state {
+        case .poweredOn:   startScan()
+        case .poweredOff:  connection = "Bluetooth is off"
+        case .unauthorized: connection = "Bluetooth not permitted"
+        default:           connection = "Bluetooth unavailable"
+        }
+    }
+
+    func centralManager(_ c: CBCentralManager, didDiscover p: CBPeripheral,
+                        advertisementData: [String: Any], rssi RSSI: NSNumber) {
+        peripheral = p
+        p.delegate = self
+        c.stopScan()
+        connection = "Connecting…"
+        c.connect(p, options: nil)
+    }
+
+    func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
+        connection = "Connected"
+        isConnected = true
+        p.discoverServices([Self.serviceUUID])
+    }
+
+    func centralManager(_ c: CBCentralManager, didFailToConnect p: CBPeripheral, error: Error?) {
+        startScan()
+    }
+
+    func centralManager(_ c: CBCentralManager, didDisconnectPeripheral p: CBPeripheral, error: Error?) {
+        isConnected = false
+        connection = "Reconnecting…"
+        startScan()
+    }
+
+    func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
+        for s in p.services ?? [] where s.uuid == Self.serviceUUID {
+            p.discoverCharacteristics([Self.charUUID], for: s)
+        }
+    }
+
+    func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
+        for ch in s.characteristics ?? [] where ch.uuid == Self.charUUID {
+            p.setNotifyValue(true, for: ch)
+            p.readValue(for: ch)
+        }
+    }
+
+    func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
+        guard let data = ch.value,
+              let decoded = try? JSONDecoder().decode(UWBState.self, from: data) else { return }
+        DispatchQueue.main.async {
+            self.state = decoded
+            self.history.append(decoded.hits ?? 0)
+            if self.history.count > 90 {
+                self.history.removeFirst(self.history.count - 90)
+            }
+        }
+    }
+}
