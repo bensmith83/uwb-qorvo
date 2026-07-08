@@ -91,3 +91,38 @@ class TestFrameEncode:
         out = run1(harness, bytes([0xFF] * 127), bytes([0xFF] * 5),
                    -99999, -9999, -9999, 4294967295)
         assert len(out) <= 128
+
+
+def run_enc(exe, seq, phe, crcb, stse, to):
+    line = f"S {seq} {phe} {crcb} {stse} {to}"
+    out = subprocess.run([exe], input=line + "\n",
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def enc_oracle(seq, phe, crcb, stse, to):
+    return (f'{{"i":{seq},"enc":1,"phe":{phe},"crcb":{crcb},'
+            f'"stse":{stse},"to":{to}}}')
+
+
+class TestEncryptedEncode:
+    ENC_CASES = [
+        (1, 0, 3, 3, 0),          # typical AirTag STS burst: CRC-bad + STS err
+        (0, 0, 0, 0, 0),          # nothing yet
+        (65535, 4095, 4095, 255, 4095),  # wide values
+    ]
+
+    @pytest.mark.parametrize("seq,phe,crcb,stse,to", ENC_CASES)
+    def test_matches_oracle(self, harness, seq, phe, crcb, stse, to):
+        assert run_enc(harness, seq, phe, crcb, stse, to) == \
+            enc_oracle(seq, phe, crcb, stse, to)
+
+    @pytest.mark.parametrize("seq,phe,crcb,stse,to", ENC_CASES)
+    def test_valid_json(self, harness, seq, phe, crcb, stse, to):
+        doc = json.loads(run_enc(harness, seq, phe, crcb, stse, to))
+        assert doc["enc"] == 1
+        assert doc["i"] == seq
+
+    def test_fits_one_notification(self, harness):
+        out = run_enc(harness, 4294967295, 4095, 4095, 255, 4095)
+        assert len(out) <= 128

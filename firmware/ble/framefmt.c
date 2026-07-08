@@ -44,3 +44,16 @@ int frame_encode(const uint8_t *data, uint16_t len, const uint8_t ts[5],
                  ts[4], ts[3], ts[2], ts[1]);
     return (int)(p - out);
 }
+
+int frame_encode_encrypted(uint32_t seq, int phe, int crcb, int stse,
+                           int to, char *out, uint16_t cap)
+{
+    if (cap < 64)
+    {
+        return 0;
+    }
+    return sprintf(out,
+                   "{\"i\":%lu,\"enc\":1,\"phe\":%d,\"crcb\":%d,"
+                   "\"stse\":%d,\"to\":%d}",
+                   (unsigned long)seq, phe, crcb, stse, to);
+}

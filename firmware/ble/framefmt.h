@@ -33,4 +33,24 @@ int frame_encode(const uint8_t *data, uint16_t len, const uint8_t ts[5],
                  int cfo_pphm, int rsl100, int fsl100, uint32_t seq,
                  char *out, uint16_t cap);
 
+/*
+ * Render an "encrypted / undecodable energy" marker for the frame
+ * characteristic when the radio saw receptions that never produced a
+ * readable frame (e.g. an AirTag's STS-encrypted traffic — bad CRC,
+ * STS-quality failures). Reports the hardware error/timeout counters so
+ * the phone can show that UWB *was* heard, just not decodable:
+ *
+ *   {"i":42,"enc":1,"phe":0,"crcb":3,"stse":3,"to":0}
+ *
+ *   enc   always 1 (lets the app branch on frame vs encrypted-marker)
+ *   phe   PHY header error count
+ *   crcb  bad-CRC frame count (decoded but failed integrity)
+ *   stse  STS error/warning count (the STS-encryption tell)
+ *   to    SFD/preamble/RX timeouts (energy seen, frame never completed)
+ *
+ * Returns string length written (excluding NUL), 0 if cap too small.
+ */
+int frame_encode_encrypted(uint32_t seq, int phe, int crcb, int stse,
+                           int to, char *out, uint16_t cap);
+
 #endif /* FRAMEFMT_H */

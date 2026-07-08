@@ -116,12 +116,16 @@ void uwb_feed_frame_poll(void)
     }
 
     static uint16_t last_head;
+    static uint32_t last_enc_seq;
     uint8_t data[FRAME_HEX_MAX];
     uint8_t ts[5];
     uint16_t dlen;
     int16_t cfo;
     int rsl100, fsl100;
     uint32_t seq;
+    /* encrypted/undecodable energy: bad-CRC + STS-error + timeout counts */
+    int phe, crcb, stse, to;
+    uint32_t enc_seq;
 
     taskENTER_CRITICAL();
     uint16_t head = info->rxPcktBuf.head;
@@ -143,15 +147,34 @@ void uwb_feed_frame_poll(void)
         fsl100 = p->fsl100;
         seq = info->event_counts_sfd_detect;
     }
+    phe = info->event_counts.PHE;
+    crcb = info->event_counts.CRCB;
+    stse = info->event_counts.STSE;
+    to = info->event_counts.SFDTO + info->event_counts.PTO +
+         info->event_counts.RTO;
+    enc_seq = (uint32_t)crcb + (uint32_t)stse;
     taskEXIT_CRITICAL();
 
+    static char json[160];
     if (fresh)
     {
-        static char json[160];
         int cfo_pphm =
             (int)((float)cfo * (CLOCK_OFFSET_PPM_TO_RATIO * 1e6 * 100));
         int n = frame_encode(data, dlen, ts, cfo_pphm, rsl100, fsl100, seq,
                              json, sizeof json);
+        if (n > 0)
+        {
+            ble_frame_push(json, (uint16_t)n);
+        }
+    }
+    else if (enc_seq != last_enc_seq)
+    {
+        /* no readable frame this tick, but the radio logged failed
+         * receptions (STS-encrypted traffic like an AirTag) — surface
+         * that so the card shows energy instead of staying blank */
+        last_enc_seq = enc_seq;
+        int n = frame_encode_encrypted(enc_seq, phe, crcb, stse, to,
+                                       json, sizeof json);
         if (n > 0)
         {
             ble_frame_push(json, (uint16_t)n);

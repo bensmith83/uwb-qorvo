@@ -287,6 +287,33 @@ CONNECTED, `0x11` DISCONNECTED, `0x13` SEC_PARAMS_REQ, `0x21` PHY_UPDATE_REQ,
 `0x23/0x24` data-length update req/done; GATTS `0x55` MTU exchange,
 `0x57` HVN_TX_COMPLETE.
 
+### AirTag frames are encrypted — the byte card shows the failure signature, not bytes
+On-device forensics during a live AirTag precision-find (window at
+`0x2001FFA0`): boot count 1 (no crash), `dwt_isr` entries==exits (ISR
+healthy), but `listener_task_notify`==0 and `copy_tx_msg`==0 and the RX
+ring head/tail never advanced. I.e. **141 radio interrupts, zero
+decodable frames queued.** AirTag/Nearby-Interaction traffic is
+STS-encrypted (SP3): it registers as energy (bad CRC, STS-quality
+failures, timeouts) that drive the *hit gauge*, but no readable payload
+ever reaches the listener ring. So the `6e5f0003` byte card cannot show
+AirTag bytes — by design, not a bug. To see real bytes you need an
+unencrypted FiRa/802.15.4z source.
+`uwb_feed_frame_poll()` now also pushes an **encrypted-energy marker**
+(`{"i":seq,"enc":1,"phe":,"crcb":,"stse":,"to":}`) from the safe
+event-counter deltas when receptions happened but nothing decoded, so
+the app card lights up (showing bad-CRC/STS-err/timeout counts) instead
+of staying blank during finds. `frame_encode_encrypted()`, host-tested.
+
+### Channel switch (control characteristic 6e5f0004)
+Write ASCII `'5'`/`'9'` (or raw byte 5/9). The BLE write handler only
+records the request; `uwb_feed_channel_poll()` (notify-task context)
+applies it — updating `get_dwt_config()->chan` and re-registering the
+listener app, exactly like autostart. Doing the reconfigure/restart in
+SD-event context would assert the SD. Verified from the Pi: 9→5→9,
+listener stays live, state JSON `"c"` confirms. Preamble code 9 is valid
+on both channels so only the channel changes. iOS: a two-segment
+picker (5 / 9), active segment tracks the live `"c"`.
+
 ### Remaining polish (optional)
 - AirTag live-hit test over BLE (hits>0 end-to-end) — logic is identical to
   `tools/detect.py`'s proven LSTAT path, but not yet observed with real

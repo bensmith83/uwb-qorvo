@@ -39,13 +39,7 @@ struct ContentView: View {
                 stat("Peak / poll", "\(s.peak ?? 0)")
             }
             HStack(spacing: 10) {
-                Button {
-                    ble.setChannel(s.channel == 9 ? 5 : 9)
-                } label: {
-                    stat("Channel (tap)", s.channelText)
-                }
-                .buttonStyle(.plain)
-                .disabled(!ble.isConnected)
+                channelPicker(current: s.channel, tint: s.levelColor)
                 stat("Preamble", s.pcodeText)
             }
 
@@ -100,28 +94,62 @@ struct ContentView: View {
     }
 
     /// Details of the most recent UWB frame the board heard
-    /// (frame characteristic 6e5f0003).
+    /// (frame characteristic 6e5f0003). Two shapes: a decoded plaintext
+    /// frame (bytes + signal levels), or an encrypted-energy marker for
+    /// STS traffic like an AirTag (no readable bytes ever — just the
+    /// failure signature).
+    @ViewBuilder
     private func frameCard(_ f: UWBFrame, tint: Color) -> some View {
+        if f.isEncrypted {
+            encryptedCard(f)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("LAST FRAME #\(f.seq ?? 0)")
+                        .font(.caption2).tracking(1).foregroundStyle(.secondary)
+                    Spacer()
+                    Text(f.pathText)
+                        .font(.caption2).bold().tracking(1)
+                        .foregroundStyle(tint)
+                }
+                if !f.bytesSpaced.isEmpty {
+                    Text(f.bytesSpaced + ((f.length ?? 0) > 16 ? " …" : ""))
+                        .font(.system(.footnote, design: .monospaced))
+                        .lineLimit(2)
+                        .foregroundStyle(.primary)
+                }
+                HStack(spacing: 12) {
+                    frameStat("RSL", f.rslText)
+                    frameStat("First path", f.fslText)
+                    frameStat("CFO", f.cfoText)
+                    frameStat("Len", f.length.map { "\($0) B" } ?? "–")
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+            .animation(.easeInOut(duration: 0.2), value: f.seq)
+        }
+    }
+
+    private func encryptedCard(_ f: UWBFrame) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("LAST FRAME #\(f.seq ?? 0)")
-                    .font(.caption2).tracking(1).foregroundStyle(.secondary)
+                Text("ENCRYPTED UWB").font(.caption2).tracking(1)
+                    .foregroundStyle(.secondary)
                 Spacer()
-                Text(f.pathText)
-                    .font(.caption2).bold().tracking(1)
-                    .foregroundStyle(tint)
+                Label("STS", systemImage: "lock.fill")
+                    .font(.caption2).bold()
+                    .foregroundStyle(.secondary)
             }
-            if !f.bytesSpaced.isEmpty {
-                Text(f.bytesSpaced + ((f.length ?? 0) > 16 ? " …" : ""))
-                    .font(.system(.footnote, design: .monospaced))
-                    .lineLimit(2)
-                    .foregroundStyle(.primary)
-            }
+            Text("Heard UWB frames, but they're STS-encrypted (AirTag / Nearby Interaction) — the payload bytes can't be read.")
+                .font(.footnote).foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 12) {
-                frameStat("RSL", f.rslText)
-                frameStat("First path", f.fslText)
-                frameStat("CFO", f.cfoText)
-                frameStat("Len", f.length.map { "\($0) B" } ?? "–")
+                frameStat("Bad CRC", "\(f.crcb ?? 0)")
+                frameStat("STS err", "\(f.stse ?? 0)")
+                frameStat("Hdr err", "\(f.phe ?? 0)")
+                frameStat("Timeouts", "\(f.to ?? 0)")
             }
         }
         .padding(12)
@@ -135,6 +163,35 @@ struct ContentView: View {
             Text(title.uppercased()).font(.caption2).tracking(1).foregroundStyle(.secondary)
             Text(value).font(.footnote).bold().monospacedDigit()
         }
+    }
+
+    /// Manual UWB channel selector. Two segments (5 / 9); the active one
+    /// reflects the board's live "c" field, so it self-corrects once the
+    /// switch lands. The radio can only listen on one channel at a time —
+    /// leave it on 9 for anything Apple (AirTag, Nearby Interaction);
+    /// pick 5 to hunt other FiRa/RTLS gear.
+    private func channelPicker(current: Int?, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("CHANNEL").font(.caption2).tracking(1).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                ForEach([5, 9], id: \.self) { ch in
+                    let active = current == ch
+                    Text("\(ch)")
+                        .font(.headline).monospacedDigit()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8)
+                            .fill(active ? tint.opacity(0.85) : Color.gray.opacity(0.15)))
+                        .foregroundStyle(active ? .white : .primary)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if ble.isConnected { ble.setChannel(ch) } }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+        .opacity(ble.isConnected ? 1 : 0.5)
     }
 
     private func stat(_ title: String, _ value: String) -> some View {

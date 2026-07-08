@@ -31,18 +31,36 @@ static int parse_hex(const char *s, uint8_t *out, int cap)
 
 int main(void)
 {
-    char hex[512], tshex[16];
-    int cfo, rsl, fsl;
-    unsigned long seq;
-    while (scanf("F %511s %15s %d %d %d %lu",
-                 hex, tshex, &cfo, &rsl, &fsl, &seq) == 6)
+    char kind[4], hex[512], tshex[16];
+    while (scanf("%3s", kind) == 1)
     {
-        uint8_t data[256], ts[5] = {0};
-        int n = parse_hex(hex, data, sizeof data);
-        parse_hex(tshex, ts, sizeof ts);
         char out[256];
-        frame_encode(data, (uint16_t)n, ts, cfo, rsl, fsl,
-                     (uint32_t)seq, out, sizeof out);
+        if (kind[0] == 'F')
+        {
+            int cfo, rsl, fsl;
+            unsigned long seq;
+            if (scanf(" %511s %15s %d %d %d %lu",
+                      hex, tshex, &cfo, &rsl, &fsl, &seq) != 6)
+                break;
+            uint8_t data[256], ts[5] = {0};
+            int n = parse_hex(hex, data, sizeof data);
+            parse_hex(tshex, ts, sizeof ts);
+            frame_encode(data, (uint16_t)n, ts, cfo, rsl, fsl,
+                         (uint32_t)seq, out, sizeof out);
+        }
+        else if (kind[0] == 'S')
+        {
+            unsigned long seq;
+            int phe, crcb, stse, to;
+            if (scanf(" %lu %d %d %d %d", &seq, &phe, &crcb, &stse, &to) != 5)
+                break;
+            frame_encode_encrypted((uint32_t)seq, phe, crcb, stse, to,
+                                   out, sizeof out);
+        }
+        else
+        {
+            break;
+        }
         puts(out);
     }
     return 0;

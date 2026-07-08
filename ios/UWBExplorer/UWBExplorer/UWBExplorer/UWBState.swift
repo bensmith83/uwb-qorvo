@@ -59,11 +59,20 @@ struct UWBFrame: Decodable {
     var fsl: Double?     // first-path signal level, dBm
     var cfoPPM: Double?  // carrier frequency offset, ppm
     var timestamp: String?
+    // encrypted / undecodable-energy marker (STS traffic, e.g. AirTag)
+    var enc: Int?
+    var phe: Int?        // PHY header errors
+    var crcb: Int?       // bad-CRC frames
+    var stse: Int?       // STS errors (the encryption tell)
+    var to: Int?         // SFD/preamble/RX timeouts
 
     enum CodingKeys: String, CodingKey {
         case seq = "i", length = "n", bytesHex = "b"
         case rsl, fsl, cfoPPM = "o", timestamp = "ts"
+        case enc, phe, crcb, stse, to
     }
+
+    var isEncrypted: Bool { enc == 1 }
 }
 
 extension UWBFrame {
