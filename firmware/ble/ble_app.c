@@ -86,6 +86,24 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
         sd_ble_gatts_sys_attr_set(p_ble_evt->evt.gatts_evt.conn_handle,
                                   NULL, 0, 0);
         break;
+    case BLE_GAP_EVT_PHY_UPDATE_REQUEST:
+    {
+        /* iOS requests 2M PHY right after connecting; an unanswered
+         * request times out the LL procedure and drops the link */
+        ble_gap_phys_t const phys = {
+            .rx_phys = BLE_GAP_PHY_AUTO,
+            .tx_phys = BLE_GAP_PHY_AUTO,
+        };
+        (void)sd_ble_gap_phy_update(p_ble_evt->evt.gap_evt.conn_handle,
+                                    &phys);
+        break;
+    }
+    case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
+        /* open characteristics, no pairing/bonding */
+        (void)sd_ble_gap_sec_params_reply(
+            p_ble_evt->evt.gap_evt.conn_handle,
+            BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
+        break;
     default:
         break;
     }

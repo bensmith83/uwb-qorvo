@@ -27,6 +27,16 @@
 #define NRF_SDH_BLE_GATT_MAX_MTU_SIZE 131
 #define NRF_BLE_GATT_ENABLED 1
 
+/* --- SoftDevice LF clock --- */
+/* Vendor truth (sdk_config.h: CLOCK_CONFIG_LF_SRC 1): the module has a
+ * 32.768 kHz LF crystal and the vendor build runs LFCLK from it. Keep the
+ * SD on the same source. (An RC-source experiment here killed advertising
+ * outright — the SD must be told the source the hardware actually has.) */
+#define NRF_SDH_CLOCK_LF_SRC 1
+#define NRF_SDH_CLOCK_LF_RC_CTIV 0
+#define NRF_SDH_CLOCK_LF_RC_TEMP_CTIV 0
+#define NRF_SDH_CLOCK_LF_ACCURACY 7
+
 /* SoftDevice owns RTC0 and TIMER0; FreeRTOS ticks on RTC1. The Qorvo HAL
  * picks RTC2 when it's enabled (HAL_RTC.c: "SD using 0; FreeRTOS using 1")
  * and TIMER1 when it's enabled (HAL_timer.c TIMERC_ID: "SD using 0").
