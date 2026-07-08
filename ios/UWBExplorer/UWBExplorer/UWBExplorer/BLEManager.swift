@@ -22,12 +22,20 @@ final class BLEManager: NSObject, ObservableObject {
     private var peripheral: CBPeripheral?
     private var ctrlChar: CBCharacteristic?
 
-    /// Retune the board's UWB listener (channel 5 or 9). The state JSON's
-    /// channel field confirms the switch a tick later.
-    func setChannel(_ ch: Int) {
-        guard ch == 5 || ch == 9,
-              let p = peripheral, let ctrl = ctrlChar else { return }
-        p.writeValue(Data(String(ch).utf8), for: ctrl, type: .withResponse)
+    /// Retune the board's UWB listener channel (5 or 9). The state JSON's
+    /// "c" field confirms the switch a tick later.
+    func setChannel(_ ch: Int) { writeCtrl("C\(ch)") }
+
+    /// Lock the listener to one preamble code (9–12); stops auto-sweep.
+    func setPreamble(_ code: Int) { writeCtrl("P\(code)") }
+
+    /// Auto-sweep preamble codes and lock onto whichever hears traffic
+    /// (true), or hold the current code (false).
+    func setAutoScan(_ on: Bool) { writeCtrl(on ? "A" : "M") }
+
+    private func writeCtrl(_ cmd: String) {
+        guard let p = peripheral, let ctrl = ctrlChar else { return }
+        p.writeValue(Data(cmd.utf8), for: ctrl, type: .withResponse)
     }
 
     override init() {

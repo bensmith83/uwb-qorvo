@@ -45,6 +45,10 @@ extension UWBState {
 
     var channelText: String { channel.map(String.init) ?? "–" }
     var pcodeText: String { pcode.map(String.init) ?? "–" }
+
+    /// True while the board is auto-sweeping preamble codes hunting a
+    /// transmitter (firmware status "scan").
+    var isScanning: Bool { status == "scan" }
 }
 
 /// One received UWB frame, from the firmware's frame characteristic

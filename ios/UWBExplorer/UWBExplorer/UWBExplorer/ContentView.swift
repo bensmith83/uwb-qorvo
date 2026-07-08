@@ -40,7 +40,7 @@ struct ContentView: View {
             }
             HStack(spacing: 10) {
                 channelPicker(current: s.channel, tint: s.levelColor)
-                stat("Preamble", s.pcodeText)
+                scanControl(s)
             }
 
             if let f = ble.lastFrame {
@@ -77,6 +77,7 @@ struct ContentView: View {
         if !ble.isConnected { return ble.connection }
         switch ble.state.status {
         case "live":  return "live"
+        case "scan":  return "scanning code \(ble.state.pcodeText)"
         case "error": return "board error"
         default:      return "waiting for board"
         }
@@ -86,6 +87,7 @@ struct ContentView: View {
         if !ble.isConnected { return "Bring the phone near the UWB unit." }
         switch ble.state.status {
         case "waiting": return "Plug the DWM3001CDK into the Pi (J20)…"
+        case "scan": return "Sweeping preamble codes 9–12 for a transmitter — trigger an AirTag precision-find near the board."
         default: break
         }
         if (ble.state.decoded ?? 0) > 0 { return "\(ble.state.decoded!) frame(s) fully decoded ✓" }
@@ -192,6 +194,39 @@ struct ContentView: View {
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
         .opacity(ble.isConnected ? 1 : 0.5)
+    }
+
+    /// Preamble-code readout + auto-sweep toggle. Apple ranges on code
+    /// 10–12 (channel 9) while the board defaults to 9, so the sweep is
+    /// what lets the byte card actually decode AirTag frames: it hops
+    /// 9→10→11→12 and locks onto whichever code hears traffic.
+    private func scanControl(_ s: UWBState) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("PREAMBLE").font(.caption2).tracking(1).foregroundStyle(.secondary)
+                Spacer()
+                if s.isScanning {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.caption2).foregroundStyle(s.levelColor)
+                        .symbolEffect(.variableColor.iterative, options: .repeating)
+                }
+            }
+            Text(s.pcodeText).font(.title2).bold().monospacedDigit()
+            HStack(spacing: 6) {
+                Text(s.isScanning ? "Scanning…" : "Auto-scan")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { s.isScanning },
+                    set: { ble.setAutoScan($0) }
+                ))
+                .labelsHidden()
+                .disabled(!ble.isConnected)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
     }
 
     private func stat(_ title: String, _ value: String) -> some View {

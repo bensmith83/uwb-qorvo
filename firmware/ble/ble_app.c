@@ -48,7 +48,9 @@ extern void uwb_feed_autostart(void);
 extern void uwb_feed_flash_poll(void); /* deferred SD-safe config save */
 extern void uwb_feed_frame_poll(void); /* newest-frame push (6e5f0003) */
 extern void uwb_feed_request_channel(int ch);
-extern void uwb_feed_channel_poll(void);
+extern void uwb_feed_request_code(int code);
+extern void uwb_feed_request_auto(int on);
+extern void uwb_feed_control_poll(void);
 /* breadcrumb.c: stores a diagnostic word readable over SWD */
 extern void bread_note(uint32_t v);
 extern void diag2_count(int idx); /* hang-forensics counters */
@@ -146,9 +148,36 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
             &p_ble_evt->evt.gatts_evt.params.write;
         if (w->handle == m_ctrl_handles.value_handle && w->len >= 1)
         {
-            uint8_t b = w->data[0];
-            /* accept ASCII '5'/'9' or raw 5/9 */
-            uwb_feed_request_channel(b == '5' ? 5 : b == '9' ? 9 : b);
+            /* text protocol (see uwb_feed.c control):
+             *   "5"/"9"      -> channel (bare digit, back-compat)
+             *   "C5"/"C9"    -> channel
+             *   "P9".."P12"  -> preamble code (forces manual)
+             *   "A"          -> auto-sweep on
+             *   "M"          -> manual (stop sweeping) */
+            const uint8_t *d = w->data;
+            uint16_t n = w->len;
+            if (d[0] == 'A' || d[0] == 'a')
+            {
+                uwb_feed_request_auto(1);
+            }
+            else if (d[0] == 'M' || d[0] == 'm')
+            {
+                uwb_feed_request_auto(0);
+            }
+            else if ((d[0] == 'P' || d[0] == 'p') && n >= 2)
+            {
+                int code = d[1] - '0';
+                if (n >= 3 && d[2] >= '0' && d[2] <= '9')
+                {
+                    code = code * 10 + (d[2] - '0');
+                }
+                uwb_feed_request_code(code);
+            }
+            else
+            {
+                uint8_t b = (d[0] == 'C' || d[0] == 'c') && n >= 2 ? d[1] : d[0];
+                uwb_feed_request_channel(b == '5' ? 5 : b == '9' ? 9 : b);
+            }
         }
         break;
     }
@@ -287,7 +316,7 @@ static void notify_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_PERIOD_MS));
         diag2_count(4); /* notify-task heartbeat */
         uwb_feed_flash_poll();
-        uwb_feed_channel_poll();
+        uwb_feed_control_poll();
         uwb_feed_frame_poll();
         uint16_t len = uwb_ble_payload(buf, sizeof buf);
         uint16_t conn = m_conn_handle;

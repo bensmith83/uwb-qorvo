@@ -31,6 +31,17 @@ extern const app_definition_t helpers_app_listener[];
 static detector_t m_det;
 static int m_live;
 static unsigned m_tick;
+static int m_scanning; /* 1 while auto-sweep is hunting a preamble code */
+
+/* Re-register the LISTENER app so the DW3110 picks up get_dwt_config()
+ * changes (channel / preamble code). Must run in task context, never in
+ * an SD-event callback. Shared by autostart, manual set, and auto-sweep. */
+static void listener_restart(void)
+{
+    listener_set_mode(2);
+    app_definition_t *app_ptr = (app_definition_t *)&helpers_app_listener[0];
+    EventManagerRegisterApp((void *)&app_ptr);
+}
 
 /* Start LISTENER2 exactly like the CLI's "LISTENER2" command (f_listen2),
  * unless the user saved their own default app in NVM. Called once from the
@@ -46,9 +57,7 @@ void uwb_feed_autostart(void)
     {
         return;
     }
-    listener_set_mode(2);
-    app_definition_t *app_ptr = (app_definition_t *)&helpers_app_listener[0];
-    EventManagerRegisterApp((void *)&app_ptr);
+    listener_restart();
 }
 
 /* Mirror the newest received frame onto the BLE frame characteristic.
@@ -63,12 +72,38 @@ void uwb_feed_autostart(void)
  * reception. Called from the 500 ms notify tick; pushes only when a new
  * frame arrived since the last tick (the USB path still streams every
  * frame). Copy under taskENTER_CRITICAL like the vendor's LSTAT does. */
-/* Channel switch (control characteristic 6e5f0004): the BLE observer
- * just records the request; the notify task applies it — changing the
- * config and restarting the listener must not run in SD-event context.
- * Preamble code 9 (PRF64) is valid on both channel 5 and 9, so only the
- * channel changes. */
-static volatile int m_pending_chan;
+/*
+ * Control (characteristic 6e5f0004) + auto-sweep.
+ *
+ * The BLE observer only records requests (volatile flags); the notify
+ * task applies them — reconfiguring the radio and restarting the
+ * listener must not run in SD-event context.
+ *
+ * Auto-sweep is the reason the app can see AirTag *bytes* at all: the
+ * DW3110 only decodes frames whose preamble code matches the
+ * transmitter, and Apple uses code 10/11/12 on channel 9 while our
+ * default is 9 (proven by the code-sweep capture — silent on 9, full
+ * frames on 10). So in AUTO mode we dwell on each of {9,10,11,12}, watch
+ * the receive counters, and lock onto whichever code actually pulls
+ * frames; if it goes quiet we resume sweeping — like a BLE sniffer
+ * hopping to find a talker. Channel stays under manual control (5/9).
+ */
+static const uint8_t SWEEP_CODES[] = {9, 10, 11, 12};
+#define SWEEP_N (sizeof SWEEP_CODES / sizeof SWEEP_CODES[0])
+#define DWELL_TICKS 5       /* ~2.5 s per code at the 500 ms tick */
+#define LOCK_THRESHOLD 3    /* receptions in a dwell that mean "found it" */
+#define UNLOCK_SILENCE 12   /* ~6 s of nothing -> resume sweeping */
+
+static volatile int m_pending_chan;  /* 5 or 9 */
+static volatile int m_pending_code;  /* 9..12, forces manual */
+static volatile int m_pending_auto;  /* 1 = auto on, -1 = manual/off */
+
+static int m_auto = 1;               /* default: sweep like a sniffer */
+static int m_sweep_idx;
+static unsigned m_dwell;
+static uint32_t m_activity_mark;
+
+int uwb_feed_is_scanning(void) { return m_scanning; }
 
 void uwb_feed_request_channel(int ch)
 {
@@ -78,25 +113,128 @@ void uwb_feed_request_channel(int ch)
     }
 }
 
-void uwb_feed_channel_poll(void)
+void uwb_feed_request_code(int code)
 {
-    int ch = m_pending_chan;
-    if (ch == 0)
+    if (code >= 9 && code <= 12)
     {
-        return;
+        m_pending_code = code;
     }
-    m_pending_chan = 0;
+}
+
+void uwb_feed_request_auto(int on) { m_pending_auto = on ? 1 : -1; }
+
+/* total frame-stage receptions so far — the "did this code hear
+ * anything" signal. Wrong preamble code barely moves it; the right one
+ * surges (headers + CRC-good/bad + STS energy). */
+static uint32_t rx_activity(listener_info_t *info)
+{
+    return info->event_counts_sfd_detect + info->event_counts.PHE +
+           info->event_counts.CRCG + info->event_counts.CRCB +
+           info->event_counts.STSE;
+}
+
+static void set_code(dwt_config_t *cfg, int code)
+{
+    cfg->txCode = code;
+    cfg->rxCode = code;
+    listener_restart();
+}
+
+void uwb_feed_control_poll(void)
+{
     dwt_config_t *cfg = get_dwt_config();
-    if (cfg == NULL || deca_to_chan(cfg->chan) == ch)
+    if (cfg == NULL)
     {
         return;
     }
-    cfg->chan = chan_to_deca(ch);
-    /* restart the listener exactly like autostart: defaultTask
-     * terminates the running app and starts this one on the new channel */
-    listener_set_mode(2);
-    app_definition_t *app_ptr = (app_definition_t *)&helpers_app_listener[0];
-    EventManagerRegisterApp((void *)&app_ptr);
+
+    /* apply pending requests first (manual overrides the sweep) */
+    if (m_pending_auto != 0)
+    {
+        m_auto = (m_pending_auto == 1);
+        m_pending_auto = 0;
+        m_dwell = 0;
+        if (m_auto)
+        {
+            m_scanning = 1;
+        }
+        else
+        {
+            m_scanning = 0;
+        }
+    }
+    if (m_pending_chan != 0)
+    {
+        int ch = m_pending_chan;
+        m_pending_chan = 0;
+        if (deca_to_chan(cfg->chan) != ch)
+        {
+            cfg->chan = chan_to_deca(ch);
+            listener_restart();
+            m_dwell = 0; /* channel changed — re-evaluate this code */
+        }
+    }
+    if (m_pending_code != 0)
+    {
+        int code = m_pending_code;
+        m_pending_code = 0;
+        m_auto = 0;
+        m_scanning = 0;
+        if (cfg->txCode != code)
+        {
+            set_code(cfg, code);
+        }
+    }
+
+    if (!m_auto)
+    {
+        return;
+    }
+
+    listener_info_t *info = getListenerInfoPtr();
+    if (info == NULL)
+    {
+        return;
+    }
+    uint32_t act = rx_activity(info);
+
+    if (!m_scanning)
+    {
+        /* locked: hold the code until it goes quiet for a while */
+        if (act != m_activity_mark)
+        {
+            m_activity_mark = act;
+            m_dwell = 0;
+        }
+        else if (++m_dwell >= UNLOCK_SILENCE)
+        {
+            m_scanning = 1;
+            m_dwell = 0;
+        }
+        return;
+    }
+
+    /* scanning: dwell on the current code, lock if it hears enough */
+    if (m_dwell == 0)
+    {
+        m_activity_mark = act; /* baseline for this code */
+    }
+    if (act - m_activity_mark >= LOCK_THRESHOLD)
+    {
+        m_scanning = 0; /* found a talker on this code */
+        m_activity_mark = act;
+        m_dwell = 0;
+        return;
+    }
+    if (++m_dwell >= DWELL_TICKS)
+    {
+        m_dwell = 0;
+        m_sweep_idx = (m_sweep_idx + 1) % SWEEP_N;
+        if (cfg->txCode != SWEEP_CODES[m_sweep_idx])
+        {
+            set_code(cfg, SWEEP_CODES[m_sweep_idx]);
+        }
+    }
 }
 
 /* temporary frame-path diagnostics, readable via SWD dump_image:
@@ -207,6 +345,8 @@ uint16_t uwb_ble_payload(char *buf, uint16_t cap)
         chan = cfg->chan;
         pcode = cfg->txCode;
     }
-    return (uint16_t)det_encode(&m_det, m_live ? "live" : "waiting", chan,
-                                pcode, buf, cap);
+    /* "scan" while auto-sweep is hunting a preamble code; the app shows
+     * "scanning code k…" and the k field cycles 9->10->11->12 */
+    const char *status = m_scanning ? "scan" : (m_live ? "live" : "waiting");
+    return (uint16_t)det_encode(&m_det, status, chan, pcode, buf, cap);
 }
