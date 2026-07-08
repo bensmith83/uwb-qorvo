@@ -50,30 +50,76 @@ void uwb_feed_autostart(void)
     EventManagerRegisterApp((void *)&app_ptr);
 }
 
-/* Every received frame flows through the vendor's per-frame USB reporter
- * (task_listener2.c, ListenerTask context) with the bytes, raw timestamp,
- * CFO and signal levels already computed — intercept it (--wrap in
- * build-ble.sh) and mirror the same data onto the BLE frame
- * characteristic before letting the USB path proceed. */
-extern error_e __real_send_to_pc_listener_info(uint8_t *data, uint8_t size,
-                                               uint8_t *ts, int16_t cfo,
-                                               int mode, int rsl100,
-                                               int fsl100);
-error_e __wrap_send_to_pc_listener_info(uint8_t *data, uint8_t size,
-                                        uint8_t *ts, int16_t cfo, int mode,
-                                        int rsl100, int fsl100)
+/* Mirror the newest received frame onto the BLE frame characteristic.
+ *
+ * (A --wrap on the vendor's per-frame USB reporter does NOT work here:
+ * send_to_pc_listener_info is defined and called inside the same
+ * translation unit, so the linker never sees the call to redirect.)
+ *
+ * Instead, sample the listener's RX ring directly: rx_listener_cb fills
+ * rxPcktBuf.buf[head] and THEN bumps head, and consumed entries aren't
+ * erased — so buf[(head-1) & mask] is always the most recently completed
+ * reception. Called from the 500 ms notify tick; pushes only when a new
+ * frame arrived since the last tick (the USB path still streams every
+ * frame). Copy under taskENTER_CRITICAL like the vendor's LSTAT does. */
+/* temporary frame-path diagnostics, readable via SWD dump_image:
+ * 0x2001FFF4 = 0xF00D0000 | head<<8 | tail
+ * 0x2001FFF8 = sfd_detect count seen by the poll
+ * 0x2001FFFC = 0xE5E50000 | value_set err<<8 | hvx err (from ble_frame_push)
+ * (these are the boot window's fault CFSR/HFSR/BFAR slots — unused unless
+ * a fault fires, in which case the fault wins and that's fine) */
+#define FRAMEDIAG ((volatile uint32_t *)0x2001FFF4u)
+
+void uwb_feed_frame_poll(void)
 {
-    static char json[160];
-    static uint32_t seq;
-    int cfo_pphm = (int)((float)cfo * (CLOCK_OFFSET_PPM_TO_RATIO * 1e6 * 100));
-    int n = frame_encode(data, size, ts, cfo_pphm, rsl100, fsl100, ++seq,
-                         json, sizeof json);
-    if (n > 0)
+    listener_info_t *info = getListenerInfoPtr();
+    if (info == NULL)
     {
-        ble_frame_push(json, (uint16_t)n);
+        return;
     }
-    return __real_send_to_pc_listener_info(data, size, ts, cfo, mode,
-                                           rsl100, fsl100);
+
+    static uint16_t last_head;
+    uint8_t data[FRAME_HEX_MAX];
+    uint8_t ts[5];
+    uint16_t dlen;
+    int16_t cfo;
+    int rsl100, fsl100;
+    uint32_t seq;
+
+    taskENTER_CRITICAL();
+    uint16_t head = info->rxPcktBuf.head;
+    FRAMEDIAG[0] = 0xF00D0000u | ((head & 0xFFu) << 8) |
+                   (info->rxPcktBuf.tail & 0xFFu);
+    FRAMEDIAG[1] = info->event_counts_sfd_detect;
+    int fresh = (head != last_head);
+    if (fresh)
+    {
+        last_head = head;
+        rx_listener_pckt_t *p =
+            &info->rxPcktBuf.buf[(head - 1) & (EVENT_BUF_L_SIZE - 1)];
+        dlen = (uint16_t)p->rxDataLen;
+        memcpy(data, p->msg.data,
+               dlen < sizeof data ? dlen : sizeof data);
+        memcpy(ts, p->timeStamp, sizeof ts);
+        cfo = p->clock_offset;
+        rsl100 = p->rsl100;
+        fsl100 = p->fsl100;
+        seq = info->event_counts_sfd_detect;
+    }
+    taskEXIT_CRITICAL();
+
+    if (fresh)
+    {
+        static char json[160];
+        int cfo_pphm =
+            (int)((float)cfo * (CLOCK_OFFSET_PPM_TO_RATIO * 1e6 * 100));
+        int n = frame_encode(data, dlen, ts, cfo_pphm, rsl100, fsl100, seq,
+                             json, sizeof json);
+        if (n > 0)
+        {
+            ble_frame_push(json, (uint16_t)n);
+        }
+    }
 }
 
 uint16_t uwb_ble_payload(char *buf, uint16_t cap)

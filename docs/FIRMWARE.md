@@ -187,13 +187,24 @@ this image; vendor restore stays `tools/flash.sh cli` / `ni`.
   `blecodec.py` encoder; host-compiled and **byte-for-byte oracle-tested
   against the Python implementation** (`tests/test_c_detector.py`).
 - `firmware/ble/framefmt.c` — per-frame detail JSON for the **second
-  characteristic `6e5f0003-...`** (added 2026-07-08): every received UWB
-  frame is intercepted via `--wrap=send_to_pc_listener_info` (uwb_feed.c)
-  and pushed as `{"i":seq,"n":len,"b":"<first 16 B hex[+]>","rsl":dBm,
-  "fsl":dBm,"o":ppm,"ts":"0x<raw RX ts>"}` — same data the vendor's USB
-  LSTN report carries (bytes, RSL/FSL, CFO, 4 ns timestamp). Read+notify;
-  value always holds the latest frame; notifications the SD can't queue
-  are dropped. Host oracle-tested (`tests/test_framefmt.py`).
+  characteristic `6e5f0003-...`** (added 2026-07-08): the newest received
+  UWB frame is pushed as `{"i":seq,"n":len,"b":"<first 16 B hex[+]>",
+  "rsl":dBm,"fsl":dBm,"o":ppm,"ts":"0x<raw RX ts>"}` — same data the
+  vendor's USB LSTN report carries (bytes, RSL/FSL, CFO, 4 ns timestamp).
+  Read+notify; value always holds the latest frame; notifications the SD
+  can't queue are dropped. Host oracle-tested (`tests/test_framefmt.py`).
+  **GOTCHA (cost a debug cycle): `--wrap=send_to_pc_listener_info` does
+  NOT work** — that function is defined and called in the same
+  translation unit (task_listener2.c), so the compiler resolves the call
+  internally and the linker never redirects it (the wrap lands in
+  gc-sections' discard pile; check the .map). Instead
+  `uwb_feed_frame_poll()` (500 ms tick) samples the listener's RX ring
+  directly: `rx_listener_cb` fills `rxPcktBuf.buf[head]` *then* bumps
+  head, and consumed entries aren't erased, so `buf[(head-1) & mask]` is
+  always the newest completed reception. Only clean receptions land in
+  the ring — CRC-error/timeout events bump counters but queue nothing,
+  so AirTag STS bursts show up as `t`/`h` counts, and only their
+  decodable (or SP3 no-data, `n:0`) frames appear on `0003`.
 - `firmware/ble/uwb_feed.c` — listener autostart (same path as the
   `LISTENER2` command; respects a user-saved non-STOP default app), 1 Hz
   counter folds (SFDD/PHE/CRCB/CRCG under `taskENTER_CRITICAL`, mirroring

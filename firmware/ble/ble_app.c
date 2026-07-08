@@ -45,6 +45,7 @@ static ble_uuid128_t const m_base_uuid = {
 extern uint16_t uwb_ble_payload(char *buf, uint16_t cap);
 extern void uwb_feed_autostart(void);
 extern void uwb_feed_flash_poll(void); /* deferred SD-safe config save */
+extern void uwb_feed_frame_poll(void); /* newest-frame push (6e5f0003) */
 /* breadcrumb.c: stores a diagnostic word readable over SWD */
 extern void bread_note(uint32_t v);
 
@@ -194,8 +195,9 @@ void ble_frame_push(const char *json, uint16_t len)
         len = PAYLOAD_MAX;
     }
     ble_gatts_value_t v = {.len = len, .offset = 0, .p_value = (uint8_t *)json};
-    (void)sd_ble_gatts_value_set(BLE_CONN_HANDLE_INVALID,
-                                 m_frame_handles.value_handle, &v);
+    uint32_t vs_err = sd_ble_gatts_value_set(BLE_CONN_HANDLE_INVALID,
+                                             m_frame_handles.value_handle, &v);
+    uint32_t hvx_err = 0;
     uint16_t conn = m_conn_handle;
     if (conn != BLE_CONN_HANDLE_INVALID)
     {
@@ -205,8 +207,11 @@ void ble_frame_push(const char *json, uint16_t len)
         hvx.type = BLE_GATT_HVX_NOTIFICATION;
         hvx.p_len = &len;
         hvx.p_data = (uint8_t const *)json;
-        (void)sd_ble_gatts_hvx(conn, &hvx);
+        hvx_err = sd_ble_gatts_hvx(conn, &hvx);
     }
+    /* frame-path diagnostics (see uwb_feed.c FRAMEDIAG) */
+    *(volatile uint32_t *)0x2001FFFCu =
+        0xE5E50000u | ((vs_err & 0xFFu) << 8) | (hvx_err & 0xFFu);
 }
 
 static void advertising_init(void)
@@ -247,6 +252,7 @@ static void notify_task(void *arg)
     {
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_PERIOD_MS));
         uwb_feed_flash_poll();
+        uwb_feed_frame_poll();
         uint16_t len = uwb_ble_payload(buf, sizeof buf);
         uint16_t conn = m_conn_handle;
         if (conn != BLE_CONN_HANDLE_INVALID)
