@@ -34,6 +34,8 @@ struct ContentView: View {
 
                     captureToggle
 
+                    stsPicker
+
                     Text(note)
                         .font(.footnote)
                         .foregroundStyle((s.decoded ?? 0) > 0 ? s.levelColor : .secondary)
@@ -301,6 +303,38 @@ struct ContentView: View {
         .disabled(!ble.isConnected)
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+    }
+
+    /// Experimental STS receive-mode selector. Apple's ranging frames are
+    /// STS-secured; SP0 (default) decodes only plain frames, so it aborts
+    /// mid-STS-frame. Trying SP1/SP3 may let the receiver decode their
+    /// structure. Each change restarts the listener (small reset risk).
+    private var stsPicker: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("STS MODE (EXPERIMENTAL)")
+                .font(.caption2).tracking(1).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                ForEach(Array([("SP0", 0), ("SP1", 1), ("SP2", 2), ("SP3", 3)]), id: \.1) { item in
+                    let active = ble.stsMode == item.1
+                    Text(item.0)
+                        .font(.caption).bold()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 7)
+                            .fill(active ? Color.accentColor.opacity(0.8) : Color.gray.opacity(0.15)))
+                        .foregroundStyle(active ? .white : .primary)
+                        .contentShape(Rectangle())
+                        .onTapGesture { if ble.isConnected { ble.setSTS(item.1) } }
+                }
+            }
+            Text("SP0 = plain frames (default). SP1/SP3 = try to decode Apple's STS frames.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+        .opacity(ble.isConnected ? 1 : 0.5)
     }
 
     private func stepBtn(_ label: String, _ action: @escaping () -> Void) -> some View {

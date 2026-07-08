@@ -52,6 +52,7 @@ extern void uwb_feed_request_channel(int ch);
 extern void uwb_feed_request_code(int code);
 extern void uwb_feed_request_auto(int on);
 extern void uwb_feed_request_capture(int on);
+extern void uwb_feed_request_sts(int mode);
 extern void uwb_feed_control_poll(void);
 /* breadcrumb.c: stores a diagnostic word readable over SWD */
 extern void bread_note(uint32_t v);
@@ -206,6 +207,11 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
             {
                 /* "N": rotate the BLE address (clears any client's cache) */
                 m_newaddr_pending = 1;
+            }
+            else if ((d[0] == 'S' || d[0] == 's') && n >= 2)
+            {
+                /* "S0".."S3": STS receive mode (experimental) */
+                uwb_feed_request_sts(d[1] - '0');
             }
             else
             {

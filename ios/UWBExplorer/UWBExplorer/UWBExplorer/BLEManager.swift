@@ -57,6 +57,17 @@ final class BLEManager: NSObject, ObservableObject {
         writeCtrl(on ? "F1" : "F0")
     }
 
+    /// STS receive mode (experimental). 0 = OFF/SP0 (plain frames, the
+    /// proven default), 1 = SP1 (STS+data), 2 = SP2, 3 = SP3 (STS ranging,
+    /// no data). Matching Apple's mode may let the receiver decode the
+    /// encrypted frames' structure. Re-sent on reconnect.
+    @Published var stsMode = 0
+    func setSTS(_ mode: Int) {
+        guard (0...3).contains(mode) else { return }
+        stsMode = mode
+        writeCtrl("S\(mode)")
+    }
+
     /// Transient: true from tapping "change address" until we're fully
     /// reconnected to the rotated device (drives a UI banner).
     @Published var rotatingAddress = false
@@ -186,8 +197,9 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
             case Self.ctrlCharUUID:
                 n += 1
                 ctrlChar = ch
-                // the board resets capture to off on each connect — restore
+                // the board resets these to defaults on each connect — restore
                 if captureFailed { p.writeValue(Data("F1".utf8), for: ch, type: .withoutResponse) }
+                if stsMode != 0 { p.writeValue(Data("S\(stsMode)".utf8), for: ch, type: .withoutResponse) }
             default:
                 break
             }

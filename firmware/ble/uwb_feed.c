@@ -224,6 +224,7 @@ static const uint8_t SWEEP_CODES[] = {9, 10, 11, 12};
 static volatile int m_pending_chan;  /* 5 or 9 */
 static volatile int m_pending_code;  /* 9..12, forces manual */
 static volatile int m_pending_auto;  /* 1 = auto on, -1 = manual/off */
+static volatile int m_pending_sts = -1; /* 0..3 STS mode, -1 = none */
 
 static int m_auto = 0;               /* default: MANUAL on code 10 (stable,
                                       * no restarts); auto-sweep is opt-in
@@ -251,6 +252,19 @@ void uwb_feed_request_code(int code)
 }
 
 void uwb_feed_request_auto(int on) { m_pending_auto = on ? 1 : -1; }
+
+/* STS mode: 0=OFF (SP0, plain frames — the proven default), 1=STS+data
+ * (SP1), 2=data+STS (SP2), 3=STS-no-data (SP3 ranging). Matching Apple's
+ * mode is what could let the receiver decode the STS frames' structure
+ * instead of aborting mid-frame. Experimental — changing it restarts the
+ * listener. */
+void uwb_feed_request_sts(int mode)
+{
+    if (mode >= 0 && mode <= 3)
+    {
+        m_pending_sts = mode;
+    }
+}
 
 /* total frame-stage receptions so far — the "did this code hear
  * anything" signal. Wrong preamble code barely moves it; the right one
@@ -312,6 +326,16 @@ void uwb_feed_control_poll(void)
         if (cfg->txCode != code)
         {
             set_code(cfg, code);
+        }
+    }
+    if (m_pending_sts >= 0)
+    {
+        int mode = m_pending_sts;
+        m_pending_sts = -1;
+        if (cfg->stsMode != mode)
+        {
+            cfg->stsMode = mode;
+            listener_restart();
         }
     }
 
