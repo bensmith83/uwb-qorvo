@@ -42,6 +42,8 @@ static ble_uuid128_t const m_base_uuid = {
 
 /* provided by uwb_feed.c: writes the current compact-JSON state */
 extern uint16_t uwb_ble_payload(char *buf, uint16_t cap);
+extern void uwb_feed_autostart(void);
+extern void uwb_feed_flash_poll(void); /* deferred SD-safe config save */
 /* breadcrumb.c: stores a diagnostic word readable over SWD */
 extern void bread_note(uint32_t v);
 
@@ -148,9 +150,14 @@ static void notify_task(void *arg)
 {
     (void)arg;
     static char buf[PAYLOAD_MAX];
+    /* let the default task run its startup hook first, then start the
+     * UWB listener (same path as the CLI's LISTENER2 command) */
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    uwb_feed_autostart();
     for (;;)
     {
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_PERIOD_MS));
+        uwb_feed_flash_poll();
         uint16_t len = uwb_ble_payload(buf, sizeof buf);
         uint16_t conn = m_conn_handle;
         if (conn != BLE_CONN_HANDLE_INVALID)

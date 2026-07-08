@@ -29,6 +29,9 @@ python3 firmware/gen_makefile.py "$EMPROJ" "$OUT" \
   --inc "$N/components/libraries/experimental_section_vars" \
   --src "$(pwd)/firmware/ble/ble_app.c" \
   --src "$(pwd)/firmware/ble/uwb_feed.c" \
+  --src "$(pwd)/firmware/ble/detector.c" \
+  --src "$(pwd)/firmware/ble/sd_flash_wrap.c" \
+  --wrap save_bssConfig \
   --src "$N/components/softdevice/common/nrf_sdh.c" \
   --src "$N/components/softdevice/common/nrf_sdh_ble.c" \
   --src "$N/components/softdevice/common/nrf_sdh_soc.c" \
