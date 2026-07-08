@@ -5,69 +5,53 @@ struct ContentView: View {
 
     var body: some View {
         let s = ble.state
-        VStack(spacing: 16) {
+        VStack(spacing: 0) {
             header
-
-            // Big meter card
-            VStack(spacing: 4) {
-                Text(s.levelWord)
-                    .font(.caption).bold()
-                    .tracking(3)
-                    .foregroundStyle(.secondary)
-                Text("\(s.hits ?? 0)")
-                    .font(.system(size: 84, weight: .heavy, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(s.levelColor)
-                    .contentTransition(.numericText())
-                Text("UWB frame-events / sec")
-                    .font(.caption).foregroundStyle(.secondary)
+                .padding(.horizontal).padding(.top)
+            if ble.rotatingAddress {
+                rotatingBanner.padding(.horizontal).padding(.top, 8)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 28)
-            .background(RoundedRectangle(cornerRadius: 24).fill(.ultraThinMaterial))
-            .overlay(RoundedRectangle(cornerRadius: 24)
-                .stroke(s.levelColor.opacity(ble.isConnected ? 0.9 : 0.15), lineWidth: 2))
-            .shadow(color: s.levelColor.opacity(s.level == "high" ? 0.5 : 0), radius: 24)
-            .animation(.easeInOut(duration: 0.25), value: s.level)
+            ScrollView {
+                VStack(spacing: 16) {
+                    meterCard(s)
 
-            Sparkline(values: ble.history, color: s.levelColor)
-                .frame(height: 70)
-                .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+                    Sparkline(values: ble.history, color: s.levelColor)
+                        .frame(height: 70)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
 
-            HStack(spacing: 10) {
-                stat("Total heard", "\(s.total ?? 0)")
-                stat("Peak / poll", "\(s.peak ?? 0)")
+                    HStack(spacing: 10) {
+                        stat("Total heard", "\(s.total ?? 0)")
+                        stat("Peak / poll", "\(s.peak ?? 0)")
+                    }
+                    HStack(spacing: 10) {
+                        channelPicker(current: s.channel, tint: s.levelColor)
+                        scanControl(s)
+                    }
+
+                    if let f = ble.lastFrame {
+                        frameCard(f, tint: s.levelColor)
+                    }
+
+                    captureToggle
+
+                    Text(note)
+                        .font(.footnote)
+                        .foregroundStyle((s.decoded ?? 0) > 0 ? s.levelColor : .secondary)
+                        .multilineTextAlignment(.center)
+
+                    Button {
+                        ble.rotateAddress()
+                    } label: {
+                        Label("Change Bluetooth address", systemImage: "shuffle")
+                            .font(.caption).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.secondary)
+                    .disabled(!ble.isConnected || ble.rotatingAddress)
+                }
+                .padding()
             }
-            HStack(spacing: 10) {
-                channelPicker(current: s.channel, tint: s.levelColor)
-                scanControl(s)
-            }
-
-            if let f = ble.lastFrame {
-                frameCard(f, tint: s.levelColor)
-            }
-
-            captureToggle
-
-            Button {
-                ble.rotateAddress()
-            } label: {
-                Label("Change Bluetooth address", systemImage: "shuffle")
-                    .font(.caption).frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .tint(.secondary)
-            .disabled(!ble.isConnected)
-
-            Text(note)
-                .font(.footnote)
-                .foregroundStyle((s.decoded ?? 0) > 0 ? s.levelColor : .secondary)
-                .multilineTextAlignment(.center)
-                .padding(.top, 4)
-
-            Spacer()
         }
-        .padding()
     }
 
     private var header: some View {
@@ -83,6 +67,39 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    private func meterCard(_ s: UWBState) -> some View {
+        VStack(spacing: 4) {
+            Text(s.levelWord)
+                .font(.caption).bold().tracking(3)
+                .foregroundStyle(.secondary)
+            Text("\(s.hits ?? 0)")
+                .font(.system(size: 84, weight: .heavy, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(s.levelColor)
+                .contentTransition(.numericText())
+            Text("UWB frame-events / sec")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+        .background(RoundedRectangle(cornerRadius: 24).fill(.ultraThinMaterial))
+        .overlay(RoundedRectangle(cornerRadius: 24)
+            .stroke(s.levelColor.opacity(ble.isConnected ? 0.9 : 0.15), lineWidth: 2))
+        .shadow(color: s.levelColor.opacity(s.level == "high" ? 0.5 : 0), radius: 24)
+        .animation(.easeInOut(duration: 0.25), value: s.level)
+    }
+
+    private var rotatingBanner: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Changing Bluetooth address — reconnecting…")
+                .font(.caption).foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 10).fill(.ultraThinMaterial))
     }
 
     private var statusText: String {

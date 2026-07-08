@@ -57,14 +57,25 @@ final class BLEManager: NSObject, ObservableObject {
         writeCtrl(on ? "F1" : "F0")
     }
 
+    /// Transient: true from tapping "change address" until we're fully
+    /// reconnected to the rotated device (drives a UI banner).
+    @Published var rotatingAddress = false
+
     /// Ask the board to rotate its BLE address. The link drops and the app
     /// re-discovers the (now cache-free) device automatically. Handy if a
     /// client's GATT cache ever goes stale.
-    func rotateAddress() { writeCtrl("N") }
+    func rotateAddress() {
+        guard ctrlChar != nil else { return }
+        rotatingAddress = true
+        writeCtrl("N")
+    }
 
     private func writeCtrl(_ cmd: String) {
         guard let p = peripheral, let ctrl = ctrlChar else { return }
-        p.writeValue(Data(cmd.utf8), for: ctrl, type: .withResponse)
+        // fire-and-forget: the UI updates optimistically and the board's
+        // state notifications (channel/code) or the disconnect (address)
+        // confirm the result — never block the toggle on an ACK.
+        p.writeValue(Data(cmd.utf8), for: ctrl, type: .withoutResponse)
     }
 
     override init() {
@@ -176,7 +187,7 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
                 n += 1
                 ctrlChar = ch
                 // the board resets capture to off on each connect — restore
-                if captureFailed { p.writeValue(Data("F1".utf8), for: ch, type: .withResponse) }
+                if captureFailed { p.writeValue(Data("F1".utf8), for: ch, type: .withoutResponse) }
             default:
                 break
             }
@@ -199,6 +210,7 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
         guard let decoded = try? JSONDecoder().decode(UWBState.self, from: data) else { return }
         DispatchQueue.main.async {
             self.gotData = true
+            self.rotatingAddress = false   // reconnected after any rotation
             self.state = decoded
             self.history.append(decoded.hits ?? 0)
             if self.history.count > 90 {

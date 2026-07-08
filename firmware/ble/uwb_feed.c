@@ -57,24 +57,28 @@ static volatile int m_fail_rsl, m_fail_fsl;
 
 void uwb_feed_request_capture(int on) { m_capture_fail = on ? 1 : 0; }
 
-static dwt_cb_t m_real_rx_err;
+static dwt_cb_t m_real_rx_err, m_real_rx_to;
 
-static void capture_rx_err_cb(const dwt_cb_data_t *rxd)
+/* Grab whatever the DW3110 holds on a non-OK reception (CRC error OR
+ * timeout) — any event that carries a datalength. Diagnostics in
+ * DIAG3[6]/[7]:
+ *   [6] total non-OK callbacks seen (err + timeout)
+ *   [7] (callbacks-with-datalength<<16) | last datalength seen */
+static void capture_grab(const dwt_cb_data_t *rxd)
 {
-    /* diagnostics (repurposed DIAG3[6]/[7], push-path now solved):
-     *   [6] total RX error callbacks seen
-     *   [7] (errors-with-datalength<<16) | last datalength seen */
-    if (rxd != NULL)
+    if (rxd == NULL)
     {
-        DIAG3[6]++;
-        uint16_t withdata = (uint16_t)(DIAG3[7] >> 16);
-        if (rxd->datalength > 0)
-        {
-            withdata++;
-        }
-        DIAG3[7] = ((uint32_t)withdata << 16) | (rxd->datalength & 0xFFFFu);
+        return;
     }
-    if (m_capture_fail && rxd != NULL && rxd->datalength > 0)
+    DIAG3[6]++;
+    uint16_t withdata = (uint16_t)(DIAG3[7] >> 16);
+    if (rxd->datalength > 0)
+    {
+        withdata++;
+    }
+    DIAG3[7] = ((uint32_t)withdata << 16) | (rxd->datalength & 0xFFFFu);
+
+    if (m_capture_fail && rxd->datalength > 0)
     {
         uint16_t n = rxd->datalength;
         if (n > FRAME_HEX_MAX)
@@ -90,9 +94,23 @@ static void capture_rx_err_cb(const dwt_cb_data_t *rxd)
         m_fail_len = rxd->datalength;
         m_fail_seq++;
     }
+}
+
+static void capture_rx_err_cb(const dwt_cb_data_t *rxd)
+{
+    capture_grab(rxd);
     if (m_real_rx_err != NULL)
     {
         m_real_rx_err(rxd);
+    }
+}
+
+static void capture_rx_to_cb(const dwt_cb_data_t *rxd)
+{
+    capture_grab(rxd);
+    if (m_real_rx_to != NULL)
+    {
+        m_real_rx_to(rxd);
     }
 }
 
@@ -101,7 +119,8 @@ extern void __real_listener2_configure_uwb(dwt_cb_t ok, dwt_cb_t to,
 void __wrap_listener2_configure_uwb(dwt_cb_t ok, dwt_cb_t to, dwt_cb_t err)
 {
     m_real_rx_err = err;
-    __real_listener2_configure_uwb(ok, to, capture_rx_err_cb);
+    m_real_rx_to = to;
+    __real_listener2_configure_uwb(ok, capture_rx_to_cb, capture_rx_err_cb);
 }
 
 static detector_t m_det;
