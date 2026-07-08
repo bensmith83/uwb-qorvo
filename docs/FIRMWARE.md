@@ -82,9 +82,30 @@ OK**). On boot:
 **Takeaway:** the Pi *build* path is real (the big unknown — solved). But getting a
 fully-booting image is more embedded debugging; **SES-on-Mac** (which builds the
 project exactly as shipped) is the lower-risk path to a *working* image if the
-boot bugs prove stubborn. Debug tooling note: OpenOCD `mdw`/`reg` output didn't
-come through in batch mode here — use `dump_image` to read memory, and expect
-"target in unknown state" when the app is sleeping/faulted.
+boot bugs prove stubborn.
+
+### Debug session 2 (gdb attempt) — narrowed, then blocked by tooling
+- The hang is **after** C-runtime init but **before** USB/app init. Halting the
+  running firmware always reports **"target in unknown state"** and then any
+  memory access stalls → the CPU is in **deep sleep or a lockup** by then. That
+  points at an **early error path**: an `app_error`/assert, or a clock/peripheral
+  init failure (e.g. LFCLK start) that routes into a handler which sleeps.
+- **Environment can't sustain interactive debugging.** A persistent OpenOCD gdb
+  server is killed (exit 144 — sandbox reaps long-running USB processes), so
+  `gdb-multiarch` can't stay attached to set breakpoints / single-step boot.
+  One-shot OpenOCD works (flashing), but can't step through boot.
+- Next real progress needs a **proper debugger**: the Mac (SES + J-Link) or a
+  non-sandboxed host running `openocd` + `gdb`. Then break at `main`, then at the
+  clock/`app_error`/board-init calls to find the exact stall.
+
+### Tooling notes (Pi)
+- OpenOCD `mdw`/`reg` output doesn't come through in `-c` batch here — use
+  `dump_image` to read memory; to read a core reg, `mww` it into RAM then
+  `dump_image` that word.
+- If OpenOCD suddenly gets **no output / exit 1** on every J-Link access, the
+  **J-Link OB has wedged** (common after killed sessions). Recover with a USB
+  reset: `USBDEVFS_RESET` ioctl (0x5514) on `/dev/bus/usb/BBB/DDD`, or replug J9.
+- To flash after the app enters sleep/lockup, use `reset halt` (not plain `halt`).
 
 ## Firmware architecture (either build path)
 
