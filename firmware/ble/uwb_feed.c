@@ -16,9 +16,14 @@
 
 #include "EventManager.h"
 #include "app.h"
+#include "deca_device_api.h"
 #include "detector.h"
 #include "driver_app_config.h"
+#include "framefmt.h"
 #include "listener2.h"
+
+/* ble_app.c: notify one frame-detail JSON on the 6e5f0003 characteristic */
+extern void ble_frame_push(const char *json, uint16_t len);
 
 extern const app_definition_t helpers_app_listener[];
 
@@ -43,6 +48,32 @@ void uwb_feed_autostart(void)
     listener_set_mode(2);
     app_definition_t *app_ptr = (app_definition_t *)&helpers_app_listener[0];
     EventManagerRegisterApp((void *)&app_ptr);
+}
+
+/* Every received frame flows through the vendor's per-frame USB reporter
+ * (task_listener2.c, ListenerTask context) with the bytes, raw timestamp,
+ * CFO and signal levels already computed — intercept it (--wrap in
+ * build-ble.sh) and mirror the same data onto the BLE frame
+ * characteristic before letting the USB path proceed. */
+extern error_e __real_send_to_pc_listener_info(uint8_t *data, uint8_t size,
+                                               uint8_t *ts, int16_t cfo,
+                                               int mode, int rsl100,
+                                               int fsl100);
+error_e __wrap_send_to_pc_listener_info(uint8_t *data, uint8_t size,
+                                        uint8_t *ts, int16_t cfo, int mode,
+                                        int rsl100, int fsl100)
+{
+    static char json[160];
+    static uint32_t seq;
+    int cfo_pphm = (int)((float)cfo * (CLOCK_OFFSET_PPM_TO_RATIO * 1e6 * 100));
+    int n = frame_encode(data, size, ts, cfo_pphm, rsl100, fsl100, ++seq,
+                         json, sizeof json);
+    if (n > 0)
+    {
+        ble_frame_push(json, (uint16_t)n);
+    }
+    return __real_send_to_pc_listener_info(data, size, ts, cfo, mode,
+                                           rsl100, fsl100);
 }
 
 uint16_t uwb_ble_payload(char *buf, uint16_t cap)

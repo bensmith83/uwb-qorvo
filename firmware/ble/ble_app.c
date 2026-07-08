@@ -39,6 +39,7 @@ static ble_uuid128_t const m_base_uuid = {
      0x93, 0xF3, 0xA3, 0xB5, 0x00, 0x00, 0x5F, 0x6E}};
 #define UUID_SERVICE 0x0001
 #define UUID_CHAR 0x0002
+#define UUID_FRAME_CHAR 0x0003 /* per-frame detail JSON (framefmt.c) */
 
 /* provided by uwb_feed.c: writes the current compact-JSON state */
 extern uint16_t uwb_ble_payload(char *buf, uint16_t cap);
@@ -77,6 +78,7 @@ static void blelog_evt(uint16_t evt_id)
 static uint8_t m_uuid_type;
 static uint16_t m_service_handle;
 static ble_gatts_char_handles_t m_char_handles;
+static ble_gatts_char_handles_t m_frame_handles;
 static volatile uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;
 
 static uint8_t m_adv_handle = BLE_GAP_ADV_SET_HANDLE_NOT_SET;
@@ -173,6 +175,38 @@ static void services_init(void)
     p.read_access = SEC_OPEN;
     p.cccd_write_access = SEC_OPEN;
     APP_ERROR_CHECK(characteristic_add(m_service_handle, &p, &m_char_handles));
+
+    /* per-frame details: same shape, pushed on every received UWB frame */
+    p.uuid = UUID_FRAME_CHAR;
+    p.init_len = 2;
+    p.p_init_value = (uint8_t *)"{}";
+    APP_ERROR_CHECK(characteristic_add(m_service_handle, &p, &m_frame_handles));
+}
+
+/* Push one frame-detail JSON (uwb_feed.c's listener wrap). Runs in the
+ * high-priority ListenerTask: keep it to two non-blocking SD calls, and
+ * drop notifications the SD can't queue (NRF_ERROR_RESOURCES) — the value
+ * stays readable and the next frame overwrites it anyway. */
+void ble_frame_push(const char *json, uint16_t len)
+{
+    if (len > PAYLOAD_MAX)
+    {
+        len = PAYLOAD_MAX;
+    }
+    ble_gatts_value_t v = {.len = len, .offset = 0, .p_value = (uint8_t *)json};
+    (void)sd_ble_gatts_value_set(BLE_CONN_HANDLE_INVALID,
+                                 m_frame_handles.value_handle, &v);
+    uint16_t conn = m_conn_handle;
+    if (conn != BLE_CONN_HANDLE_INVALID)
+    {
+        ble_gatts_hvx_params_t hvx;
+        memset(&hvx, 0, sizeof hvx);
+        hvx.handle = m_frame_handles.value_handle;
+        hvx.type = BLE_GATT_HVX_NOTIFICATION;
+        hvx.p_len = &len;
+        hvx.p_data = (uint8_t const *)json;
+        (void)sd_ble_gatts_hvx(conn, &hvx);
+    }
 }
 
 static void advertising_init(void)

@@ -186,6 +186,14 @@ this image; vendor restore stays `tools/flash.sh cli` / `ni`.
 - `firmware/ble/detector.c` — pure-C port of `webmodel.py` DetectorState +
   `blecodec.py` encoder; host-compiled and **byte-for-byte oracle-tested
   against the Python implementation** (`tests/test_c_detector.py`).
+- `firmware/ble/framefmt.c` — per-frame detail JSON for the **second
+  characteristic `6e5f0003-...`** (added 2026-07-08): every received UWB
+  frame is intercepted via `--wrap=send_to_pc_listener_info` (uwb_feed.c)
+  and pushed as `{"i":seq,"n":len,"b":"<first 16 B hex[+]>","rsl":dBm,
+  "fsl":dBm,"o":ppm,"ts":"0x<raw RX ts>"}` — same data the vendor's USB
+  LSTN report carries (bytes, RSL/FSL, CFO, 4 ns timestamp). Read+notify;
+  value always holds the latest frame; notifications the SD can't queue
+  are dropped. Host oracle-tested (`tests/test_framefmt.py`).
 - `firmware/ble/uwb_feed.c` — listener autostart (same path as the
   `LISTENER2` command; respects a user-saved non-STOP default app), 1 Hz
   counter folds (SFDD/PHE/CRCB/CRCG under `taskENTER_CRITICAL`, mirroring
@@ -271,7 +279,17 @@ CONNECTED, `0x11` DISCONNECTED, `0x13` SEC_PARAMS_REQ, `0x21` PHY_UPDATE_REQ,
 ### Remaining polish (optional)
 - AirTag live-hit test over BLE (hits>0 end-to-end) — logic is identical to
   `tools/detect.py`'s proven LSTAT path, but not yet observed with real
-  UWB traffic on the BLE build.
+  UWB traffic on the BLE build. Same caveat for the `6e5f0003` frame
+  characteristic (plumbing verified: both-char subscribe works, 500 ms
+  cadence held; no live frame observed yet).
+- iOS app doesn't subscribe to the frame characteristic yet
+  (`BLEManager.swift` — add `6e5f0003` and render frame details).
+- More surfaceable data if wanted: STS good/bad counters
+  (`listener_info_t`), full `dwt_deviceentcnts_t` (RX overruns, SFD/preamble
+  timeouts, address-filter errors), per-frame STS quality
+  (`listener2_readstsquality`, vendor left it commented out in the ISR),
+  frame-type decode (802.15.4 FC/seq — phone-side from `b`), DW3110
+  temp/voltage (`dwt_readtempvbat`), RX diagnostics/CIR (heavy).
 - Reclaim ~1 KB RAM (`--ram-base 0x20002210`); drop breadcrumbs for a
   "release" image; iOS field test.
 
