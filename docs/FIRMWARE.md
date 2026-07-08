@@ -234,6 +234,40 @@ this image; vendor restore stays `tools/flash.sh cli` / `ni`.
    SDK error via `APP_ERROR_CHECK` (err code in `info->err_code`).
    MWU REGION[0] on this setup = the SD's RAM (`0x20000000..0x2000220F`).
 
+### ★ SOLVED (2026-07-08): iPhone couldn't connect — unanswered PHY update request ★
+
+Symptom: every iOS central (nRF Connect, the `ios/` app) discovered the
+advert but connect hung/timed out; Linux (`bleak`) always worked. Root
+cause **confirmed on-device**: iOS sends an **LL PHY update request (2M)
+immediately after connecting**, and S113 surfaces it as
+`BLE_GAP_EVT_PHY_UPDATE_REQUEST` which the app MUST answer with
+`sd_ble_gap_phy_update()` — unanswered, the LL procedure times out and
+the link drops before GATT ever starts. BlueZ never initiates a PHY
+update, which is why the Pi could always connect. Fix in
+`ble_app.c ble_evt_handler`: reply `{AUTO, AUTO}` to
+`PHY_UPDATE_REQUEST` (plus a belt-and-braces
+`sd_ble_gap_sec_params_reply(PAIRING_NOT_SUPP)` for
+`SEC_PARAMS_REQUEST` — not exercised by the successful session).
+
+Proof (BLE event breadcrumbs, window at `0x2001FFC0`, see below): during
+the iPhone session the flags word showed PHY_UPDATE_REQUEST answered
+with err 0, connect stayed up, and the event ring filled with `0x57`
+(`HVN_TX_COMPLETE`) — notifications streaming to the phone at 500 ms.
+The `ios/` app connected, showed LIVE, and rendered the gauge; `bleak`
+re-verified after. Disconnect reasons observed were clean `0x13`
+(remote user terminated).
+
+**BLE event breadcrumb window** (kept in the build — costs a few stores
+per BLE event): 8 words at `0x2001FFC0`, zeroed by `tools/flash.sh ble`,
+RAM shrunk to `0x1FFC0`. Layout documented in `ble_app.c` (event
+counter, last-8 evt_id ring, connect/disconnect counts, last disconnect
+reason `0xD15C00xx`, last `adv_start` err `0xAD5Exxxx`, adv restart
+count, PHY/sec/sys-attr flags). Read with one-shot OpenOCD
+`dump_image ... 0x2001FFC0 64`. Decoder ring: GAP evts `0x10`
+CONNECTED, `0x11` DISCONNECTED, `0x13` SEC_PARAMS_REQ, `0x21` PHY_UPDATE_REQ,
+`0x23/0x24` data-length update req/done; GATTS `0x55` MTU exchange,
+`0x57` HVN_TX_COMPLETE.
+
 ### Remaining polish (optional)
 - AirTag live-hit test over BLE (hits>0 end-to-end) — logic is identical to
   `tools/detect.py`'s proven LSTAT path, but not yet observed with real

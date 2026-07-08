@@ -49,6 +49,31 @@ extern void bread_note(uint32_t v);
 
 NRF_BLE_GATT_DEF(m_gatt);
 
+/*
+ * BLE event breadcrumbs — 8 words at 0x2001FFC0 (just below the boot
+ * breadcrumb window; RAM shrunk to 0x1FFC0 in build-ble.sh, zeroed by
+ * tools/flash.sh).  The iPhone-connect failure is only reproducible from
+ * the phone, so this is the board's view of the attempt, read back over
+ * SWD with one-shot OpenOCD dump_image:
+ *   [0] 0xB1E1xxxx — total BLE events dispatched (low 16 bits)
+ *   [1] newest 4 evt_ids, packed bytes, newest in the low byte
+ *   [3] evt_ids 5..8 (ring continues; oldest in the high byte)
+ *   [2] connect count << 16 | disconnect count
+ *   [4] 0xD15C00xx — last disconnect reason (HCI status byte)
+ *   [5] 0xAD5Exxxx — last sd_ble_gap_adv_start error (low 16 bits)
+ *   [6] advertising (re)start count
+ *   [7] flags: b0 phy-req seen, b1 sec-params seen, b2 sys-attr seen;
+ *       bits 8-15 phy_update err, bits 16-23 sec_params_reply err
+ */
+#define BLELOG ((volatile uint32_t *)0x2001FFC0u)
+
+static void blelog_evt(uint16_t evt_id)
+{
+    BLELOG[0] = 0xB1E10000u | ((BLELOG[0] + 1u) & 0xFFFFu);
+    BLELOG[3] = (BLELOG[3] << 8) | (BLELOG[1] >> 24);
+    BLELOG[1] = (BLELOG[1] << 8) | (evt_id & 0xFFu);
+}
+
 static uint8_t m_uuid_type;
 static uint16_t m_service_handle;
 static ble_gatts_char_handles_t m_char_handles;
@@ -64,6 +89,8 @@ static ble_gap_adv_data_t m_adv_data = {
 static void advertising_start(void)
 {
     ret_code_t err = sd_ble_gap_adv_start(m_adv_handle, APP_BLE_CONN_CFG_TAG);
+    BLELOG[5] = 0xAD5E0000u | (err & 0xFFFFu);
+    BLELOG[6]++;
     if (err != NRF_SUCCESS && err != NRF_ERROR_INVALID_STATE)
     {
         APP_ERROR_CHECK(err);
@@ -73,16 +100,22 @@ static void advertising_start(void)
 static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
 {
     (void)p_context;
+    blelog_evt(p_ble_evt->header.evt_id);
     switch (p_ble_evt->header.evt_id)
     {
     case BLE_GAP_EVT_CONNECTED:
+        BLELOG[2] += 0x10000u;
         m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
         break;
     case BLE_GAP_EVT_DISCONNECTED:
+        BLELOG[2] += 1u;
+        BLELOG[4] = 0xD15C0000u |
+                    p_ble_evt->evt.gap_evt.params.disconnected.reason;
         m_conn_handle = BLE_CONN_HANDLE_INVALID;
         advertising_start();
         break;
     case BLE_GATTS_EVT_SYS_ATTR_MISSING:
+        BLELOG[7] |= 4u;
         sd_ble_gatts_sys_attr_set(p_ble_evt->evt.gatts_evt.conn_handle,
                                   NULL, 0, 0);
         break;
@@ -94,16 +127,20 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
             .rx_phys = BLE_GAP_PHY_AUTO,
             .tx_phys = BLE_GAP_PHY_AUTO,
         };
-        (void)sd_ble_gap_phy_update(p_ble_evt->evt.gap_evt.conn_handle,
-                                    &phys);
+        uint32_t err = sd_ble_gap_phy_update(
+            p_ble_evt->evt.gap_evt.conn_handle, &phys);
+        BLELOG[7] = (BLELOG[7] & ~0xFF00u) | 1u | ((err & 0xFFu) << 8);
         break;
     }
     case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
+    {
         /* open characteristics, no pairing/bonding */
-        (void)sd_ble_gap_sec_params_reply(
+        uint32_t err = sd_ble_gap_sec_params_reply(
             p_ble_evt->evt.gap_evt.conn_handle,
             BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP, NULL, NULL);
+        BLELOG[7] = (BLELOG[7] & ~0xFF0000u) | 2u | ((err & 0xFFu) << 16);
         break;
+    }
     default:
         break;
     }

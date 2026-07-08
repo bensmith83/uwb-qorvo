@@ -42,13 +42,14 @@ python3 firmware/gen_makefile.py "$EMPROJ" "$OUT" \
   --src "$N/components/libraries/experimental_section_vars/nrf_section_iter.c"
 
 if [[ "${1:-}" != "--no-breadcrumbs" ]]; then
-  # reserve the breadcrumb window (top 32 B of RAM) + wrap the boot ladder
+  # reserve the breadcrumb windows (top 64 B of RAM: boot @0x2001FFE0 +
+  # BLE event log @0x2001FFC0) + wrap the boot ladder
   python3 - "$OUT" <<'EOF'
 import re, sys
 out = sys.argv[1]
 ld = open(f"{out}/merged.ld").read()
 ld = re.sub(r"(RAM \(rwx\) : ORIGIN = 0x[0-9a-f]+, LENGTH = )(0x[0-9a-f]+)",
-            lambda m: m.group(1) + hex(int(m.group(2), 16) - 0x20), ld, count=1)
+            lambda m: m.group(1) + hex(int(m.group(2), 16) - 0x40), ld, count=1)
 open(f"{out}/merged.ld", "w").write(ld)
 p = f"{out}/Makefile"
 s = open(p).read()
