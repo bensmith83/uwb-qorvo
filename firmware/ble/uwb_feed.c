@@ -28,6 +28,10 @@ extern void ble_frame_push(const char *json, uint16_t len);
 
 extern const app_definition_t helpers_app_listener[];
 
+/* SWD-readable diagnostics window (documented in full below where the
+ * other fields are written). */
+#define DIAG3 ((volatile uint32_t *)0x2001FF80u)
+
 /*
  * CRC-fail frame capture (control command "F1"/"F0", off by default).
  *
@@ -57,6 +61,19 @@ static dwt_cb_t m_real_rx_err;
 
 static void capture_rx_err_cb(const dwt_cb_data_t *rxd)
 {
+    /* diagnostics (repurposed DIAG3[6]/[7], push-path now solved):
+     *   [6] total RX error callbacks seen
+     *   [7] (errors-with-datalength<<16) | last datalength seen */
+    if (rxd != NULL)
+    {
+        DIAG3[6]++;
+        uint16_t withdata = (uint16_t)(DIAG3[7] >> 16);
+        if (rxd->datalength > 0)
+        {
+            withdata++;
+        }
+        DIAG3[7] = ((uint32_t)withdata << 16) | (rxd->datalength & 0xFFFFu);
+    }
     if (m_capture_fail && rxd != NULL && rxd->datalength > 0)
     {
         uint16_t n = rxd->datalength;
@@ -103,9 +120,9 @@ static int m_scanning; /* 1 while auto-sweep is hunting a preamble code */
  *   [4] 0xB2 << 24 | in_restart<<16 | current preamble code<<8 | mode
  *       (in_restart=1 means a fault hit DURING a listener restart)
  *   [5] rx_activity at the last restart
- *   [6..7] free
+ *   [6] total RX-error callbacks (reception diagnostics)
+ *   [7] (errors-with-data<<16) | last datalength seen
  */
-#define DIAG3 ((volatile uint32_t *)0x2001FF80u)
 
 /* Re-register the LISTENER app so the DW3110 picks up get_dwt_config()
  * changes (channel / preamble code). Must run in task context, never in

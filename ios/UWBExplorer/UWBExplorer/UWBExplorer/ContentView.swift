@@ -49,6 +49,16 @@ struct ContentView: View {
 
             captureToggle
 
+            Button {
+                ble.rotateAddress()
+            } label: {
+                Label("Change Bluetooth address", systemImage: "shuffle")
+                    .font(.caption).frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(.secondary)
+            .disabled(!ble.isConnected)
+
             Text(note)
                 .font(.footnote)
                 .foregroundStyle((s.decoded ?? 0) > 0 ? s.levelColor : .secondary)

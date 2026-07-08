@@ -57,6 +57,11 @@ final class BLEManager: NSObject, ObservableObject {
         writeCtrl(on ? "F1" : "F0")
     }
 
+    /// Ask the board to rotate its BLE address. The link drops and the app
+    /// re-discovers the (now cache-free) device automatically. Handy if a
+    /// client's GATT cache ever goes stale.
+    func rotateAddress() { writeCtrl("N") }
+
     private func writeCtrl(_ cmd: String) {
         guard let p = peripheral, let ctrl = ctrlChar else { return }
         p.writeValue(Data(cmd.utf8), for: ctrl, type: .withResponse)

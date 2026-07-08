@@ -91,6 +91,9 @@ static ble_gatts_char_handles_t m_frame_handles;
 static ble_gatts_char_handles_t m_ctrl_handles;
 static volatile uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;
 
+static ble_gap_addr_t m_addr;          /* our current BLE address */
+static volatile int m_newaddr_pending; /* "N": rotate the address */
+
 static uint8_t m_adv_handle = BLE_GAP_ADV_SET_HANDLE_NOT_SET;
 static uint8_t m_enc_advdata[BLE_GAP_ADV_SET_DATA_SIZE_MAX];
 static ble_gap_adv_data_t m_adv_data = {
@@ -109,6 +112,17 @@ static void advertising_start(void)
     }
 }
 
+/* Rotate to a new BLE address and re-advertise. New address = a brand-new
+ * device to iOS, so it re-discovers the GATT DB fresh (cache-buster). Must
+ * run with advertising stopped and no active connection. */
+static void apply_new_addr(void)
+{
+    (void)sd_ble_gap_adv_stop(m_adv_handle); /* no-op if already stopped */
+    m_addr.addr[0]++;                        /* next distinct address */
+    (void)sd_ble_gap_addr_set(&m_addr);
+    advertising_start();
+}
+
 static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
 {
     (void)p_context;
@@ -124,7 +138,15 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
         BLELOG[4] = 0xD15C0000u |
                     p_ble_evt->evt.gap_evt.params.disconnected.reason;
         m_conn_handle = BLE_CONN_HANDLE_INVALID;
-        advertising_start();
+        if (m_newaddr_pending)
+        {
+            m_newaddr_pending = 0;
+            apply_new_addr(); /* rotate address, then re-advertise */
+        }
+        else
+        {
+            advertising_start();
+        }
         break;
     case BLE_GATTS_EVT_SYS_ATTR_MISSING:
         BLELOG[7] |= 4u;
@@ -179,6 +201,11 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
             {
                 /* "F1"/"F0": capture CRC-failed frames (AirTag bytes) */
                 uwb_feed_request_capture(d[1] == '1');
+            }
+            else if (d[0] == 'N' || d[0] == 'n')
+            {
+                /* "N": rotate the BLE address (clears any client's cache) */
+                m_newaddr_pending = 1;
             }
             else
             {
@@ -328,6 +355,22 @@ static void notify_task(void *arg)
         uwb_feed_flash_poll();
         uwb_feed_control_poll();
         uwb_feed_frame_poll();
+        if (m_newaddr_pending)
+        {
+            uint16_t conn = m_conn_handle;
+            if (conn != BLE_CONN_HANDLE_INVALID)
+            {
+                /* drop the link; the disconnect handler rotates the address
+                 * and re-advertises, and the app re-scans by service UUID */
+                (void)sd_ble_gap_disconnect(
+                    conn, BLE_HCI_REMOTE_USER_TERMINATED_CONNECTION);
+            }
+            else
+            {
+                m_newaddr_pending = 0;
+                apply_new_addr();
+            }
+        }
         uint16_t len = uwb_ble_payload(buf, sizeof buf);
         uint16_t conn = m_conn_handle;
         if (conn != BLE_CONN_HANDLE_INVALID)
@@ -440,16 +483,15 @@ void ble_app_init(void)
      * device to the phone = a clean re-discovery of all characteristics,
      * with no need to restart the phone. Bump the low byte if a cache ever
      * goes stale again. (Static-random: the two MSBits of addr[5] are 11.) */
-    ble_gap_addr_t addr;
-    memset(&addr, 0, sizeof addr);
-    addr.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
-    addr.addr[0] = 0x02;
-    addr.addr[1] = 0x03;
-    addr.addr[2] = 0xB5;
-    addr.addr[3] = 0x24;
-    addr.addr[4] = 0x5F;
-    addr.addr[5] = 0xEE; /* 0b1110_1110 -> valid static-random */
-    APP_ERROR_CHECK(sd_ble_gap_addr_set(&addr));
+    memset(&m_addr, 0, sizeof m_addr);
+    m_addr.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
+    m_addr.addr[0] = 0x02;
+    m_addr.addr[1] = 0x03;
+    m_addr.addr[2] = 0xB5;
+    m_addr.addr[3] = 0x24;
+    m_addr.addr[4] = 0x5F;
+    m_addr.addr[5] = 0xEE; /* 0b1110_1110 -> valid static-random */
+    APP_ERROR_CHECK(sd_ble_gap_addr_set(&m_addr));
 
     ble_gap_conn_sec_mode_t sec_mode;
     BLE_GAP_CONN_SEC_MODE_SET_OPEN(&sec_mode);
