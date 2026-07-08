@@ -328,6 +328,19 @@ on reboot); auto-sweep is **opt-in** via the app toggle and flagged
 experimental. Still open: whether heavy AirTag *reception* on a live code
 (no restart) is SD-stable — the next field test answers it.
 
+### Frame card was silent: HVN TX queue = 1 (state push starved the frame push)
+Bars (state char) updated but the frame char never did. On-device: the
+frame push logged an hvx error while the state push worked. Cause: S113's
+default `hvn_tx_queue_size` is **1**, and the notify task pushes *two*
+characteristics per 500 ms tick — the state notification takes the single
+slot, so the frame notification always fails `NRF_ERROR_RESOURCES`. Fix:
+`sd_ble_cfg_set(BLE_CONN_CFG_GATTS, hvn_tx_queue_size=4)` before
+`nrf_sdh_ble_enable` (ble_app.c). SD RAM need rose to 0x200023a8, still
+under RAM_BASE 0x20002608; boots clean. Also found: even on code 10 the
+AirTag's STS frames fail CRC (0 OK frames queued in a 336-ISR find), so
+the *decoded-bytes* card is rare — the encrypted-energy marker is the
+reliable surface, now that it can actually be delivered.
+
 ### Auto-sweep + channel/preamble control (characteristic 6e5f0004)
 `uwb_feed_control_poll()` (notify-task context — radio reconfigure +
 listener restart must never run in SD-event context) implements a

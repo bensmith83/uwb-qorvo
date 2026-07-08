@@ -395,6 +395,18 @@ void ble_app_init(void)
     uint32_t ram_start = 0;
     APP_ERROR_CHECK(
         nrf_sdh_ble_default_cfg_set(APP_BLE_CONN_CFG_TAG, &ram_start));
+
+    /* Bump the notification TX queue from the default 1 to 4. We push two
+     * characteristics per tick (state "bars" + frame details); with a
+     * 1-deep queue the state push takes the slot and the frame push
+     * always fails NRF_ERROR_RESOURCES, so the frame card never arrives.
+     * (Diagnosed on-device: bars update, frame char hvx errors.) */
+    ble_cfg_t gatts_cfg;
+    memset(&gatts_cfg, 0, sizeof gatts_cfg);
+    gatts_cfg.conn_cfg.conn_cfg_tag = APP_BLE_CONN_CFG_TAG;
+    gatts_cfg.conn_cfg.params.gatts_conn_cfg.hvn_tx_queue_size = 4;
+    APP_ERROR_CHECK(sd_ble_cfg_set(BLE_CONN_CFG_GATTS, &gatts_cfg, ram_start));
+
     ret_code_t err = nrf_sdh_ble_enable(&ram_start);
     bread_note(ram_start); /* required app RAM base — read via SWD to tune */
     APP_ERROR_CHECK(err);

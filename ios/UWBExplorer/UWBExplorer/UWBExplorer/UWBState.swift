@@ -55,7 +55,7 @@ extension UWBState {
 /// (6e5f0003, firmware/ble/framefmt.c). The characteristic's initial
 /// value is "{}", so every field is optional; `seq` nil means
 /// "no frame heard yet".
-struct UWBFrame: Decodable {
+struct UWBFrame: Codable, Hashable {
     var seq: Int?
     var length: Int?
     var bytesHex: String?
@@ -77,6 +77,16 @@ struct UWBFrame: Decodable {
     }
 
     var isEncrypted: Bool { enc == 1 }
+}
+
+/// One captured frame kept in History, tagged with when it arrived and
+/// the radio config it was heard on.
+struct FrameRecord: Identifiable, Codable, Hashable {
+    var id = UUID()
+    var date: Date
+    var channel: Int?
+    var code: Int?
+    var frame: UWBFrame
 }
 
 extension UWBFrame {

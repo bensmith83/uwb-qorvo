@@ -17,6 +17,12 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var history: [Int] = []
     /// Latest received UWB frame (nil until the board hears one).
     @Published var lastFrame: UWBFrame?
+    /// Persisted log of every distinct frame the board reported, newest
+    /// first — survives app restarts so you can revisit past interactions.
+    @Published var frameHistory: [FrameRecord] = []
+
+    private let historyKey = "uwb.frameHistory.v1"
+    private let historyCap = 300
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -40,7 +46,47 @@ final class BLEManager: NSObject, ObservableObject {
 
     override init() {
         super.init()
+        loadHistory()
         central = CBCentralManager(delegate: self, queue: nil)
+    }
+
+    func clearHistory() {
+        frameHistory = []
+        UserDefaults.standard.removeObject(forKey: historyKey)
+    }
+
+    private func loadHistory() {
+        guard let data = UserDefaults.standard.data(forKey: historyKey),
+              let recs = try? JSONDecoder().decode([FrameRecord].self, from: data)
+        else { return }
+        frameHistory = recs
+    }
+
+    private func saveHistory() {
+        if let data = try? JSONEncoder().encode(frameHistory) {
+            UserDefaults.standard.set(data, forKey: historyKey)
+        }
+    }
+
+    /// Record a frame in history. A real decoded frame is always kept as
+    /// its own entry (those are rare and precious); a run of
+    /// encrypted-energy snapshots within 5 s collapses into one updating
+    /// row so a single find doesn't flood the log.
+    private func record(_ frame: UWBFrame) {
+        let now = Date()
+        if frame.isEncrypted, let first = frameHistory.first,
+           first.frame.isEncrypted, now.timeIntervalSince(first.date) < 5 {
+            frameHistory[0] = FrameRecord(id: first.id, date: now,
+                                          channel: state.channel,
+                                          code: state.pcode, frame: frame)
+        } else {
+            frameHistory.insert(FrameRecord(date: now, channel: state.channel,
+                                            code: state.pcode, frame: frame), at: 0)
+            if frameHistory.count > historyCap {
+                frameHistory.removeLast(frameHistory.count - historyCap)
+            }
+        }
+        saveHistory()
     }
 
     private func startScan() {
@@ -113,7 +159,10 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
             // Initial value is "{}" — all-nil decode means no frame yet.
             guard let frame = try? JSONDecoder().decode(UWBFrame.self, from: data),
                   frame.seq != nil else { return }
-            DispatchQueue.main.async { self.lastFrame = frame }
+            DispatchQueue.main.async {
+                self.lastFrame = frame
+                self.record(frame)
+            }
             return
         }
         guard let decoded = try? JSONDecoder().decode(UWBState.self, from: data) else { return }

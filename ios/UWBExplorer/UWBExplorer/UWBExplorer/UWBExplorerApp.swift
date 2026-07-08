@@ -6,8 +6,15 @@ struct UWBExplorerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(ble)
+            TabView {
+                ContentView()
+                    .tabItem { Label("Live", systemImage: "dot.radiowaves.left.and.right") }
+                HistoryView()
+                    .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
+                LearnView()
+                    .tabItem { Label("Learn", systemImage: "book") }
+            }
+            .environmentObject(ble)
         }
     }
 }

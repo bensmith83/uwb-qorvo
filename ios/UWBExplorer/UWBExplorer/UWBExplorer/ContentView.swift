@@ -196,10 +196,11 @@ struct ContentView: View {
         .opacity(ble.isConnected ? 1 : 0.5)
     }
 
-    /// Preamble-code readout + auto-sweep toggle. Apple ranges on code
-    /// 10–12 (channel 9) while the board defaults to 9, so the sweep is
-    /// what lets the byte card actually decode AirTag frames: it hops
-    /// 9→10→11→12 and locks onto whichever code hears traffic.
+    /// Preamble-code readout + manual stepper + (experimental) auto-sweep.
+    /// The board defaults to code 10 (Apple's strongest). Stepping the code
+    /// or auto-sweeping restarts the listener, which can occasionally reset
+    /// the board — it recovers on code 10. Auto-scan hops 9→10→11→12 and
+    /// locks onto whichever hears traffic, but is beta for that reason.
     private func scanControl(_ s: UWBState) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
@@ -213,7 +214,7 @@ struct ContentView: View {
             }
             Text(s.pcodeText).font(.title2).bold().monospacedDigit()
             HStack(spacing: 6) {
-                Text(s.isScanning ? "Scanning…" : "Auto-scan")
+                Text(s.isScanning ? "Scanning…" : "Auto-scan (beta)")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Toggle("", isOn: Binding(
