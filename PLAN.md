@@ -222,6 +222,19 @@ Open threads:
   older dhcpcd/hostapd image needs the manual AP path (script warns + explains).
 - Next visual polish possible: show per-counter breakdown / RSSI on the page.
 
+## ★ FIRMWARE BOOT HANG SOLVED (2026-07-07, session 3) ★
+
+The Pi-built GCC CLI firmware now fully works: builds, flashes, boots, J20
+console live, listener + config save verified on hardware. Root cause was the
+linker script placing `.fconfig` inline in `.text` — the app page-erases the
+flash page holding `__fconfig_start` on config save and destroyed its own
+`.dw_drivers` table (BusFault in `uwb_init`). Fixed in
+`firmware/gen_makefile.py` (vendor memory map: fconfig gets its own page at
+0x1E000, code at 0x1F000). Full story + breadcrumb-debugging technique in
+docs/FIRMWARE.md. **Board is currently running our GCC-built image**
+(`0.1.1-260707`); vendor restore: `tools/flash.sh cli` or `tools/flash.sh ni`.
+Next: SoftDevice S113 + BLE GATT service (see docs/FIRMWARE.md next steps).
+
 ## Current state (update as you go!)
 
 - [x] Board connected: J-Link VID 1366 → /dev/ttyACM0; solid red LED

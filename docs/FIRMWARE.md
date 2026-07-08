@@ -84,6 +84,47 @@ fully-booting image is more embedded debugging; **SES-on-Mac** (which builds the
 project exactly as shipped) is the lower-risk path to a *working* image if the
 boot bugs prove stubborn.
 
+### ★ SOLVED (2026-07-07 session 3): boot hang root-caused and FIXED — Pi build fully works ★
+
+The GCC-built CLI firmware now **builds, flashes, boots, and runs** on the Pi:
+J20 console live (`VERSION:0.1.1-260707`), LISTENER2 + LSTAT polling works
+(`tools/detect.py` runs against it), `SAVE` works, and saved config persists
+across reboot. No SES, no Mac, no SoftDevice yet.
+
+**Root cause of the hang:** not a toolchain/CRT bug at all. The generated
+linker script placed the `.fconfig` section **inline in `.text`**, right
+before the `.dw_drivers` table. But the app treats the flash page containing
+`__fconfig_start` as its rewritable NVM config area — `config.c` does
+`nrf_nvmc_page_erase((uint32_t)&__fconfig_start)` on config save. So on the
+first save (AppConfigInit rewrites config when the CRC is missing after a
+mass-erase), the firmware **erased 4KB of its own flash**, wiping the
+`.dw_drivers` table. `uwb_init()` then read a garbage ops pointer from the
+clobbered table (the word it fetched, `0x0A2E0000`, was config data) and
+**BusFaulted** (CFSR=0x8200 PRECISERR, BFAR=0x0A2E0024). The default
+`b .` handler left the CPU in the "unknown state" we kept seeing.
+
+**Fix (in `firmware/gen_makefile.py`, tests in `tests/test_gen_makefile.py`):**
+emit the vendor SES memory map instead of one flat FLASH region:
+- `VECTORS` at `0x0` (0x1000) — `.isr_vector` only
+- `FCONFIG` at `0x1E000` (0x1000) — `.fconfig` **alone on its own erase page**
+  (matches SES `FCONFIG_START=0x1E000`)
+- `FLASH` (code) from `0x1F000` (matches SES `INIT_START=0x1F000`)
+
+Bonus: the resulting 0x1000–0x1CFFF hole is exactly where a SoftDevice goes
+(Qorvo clearly designed the map for the BLE-enabled QANI build) — so the
+SoftDevice step won't need another layout upheaval.
+
+**How it was found — breadcrumb debugging (works in this sandbox):**
+`firmware/debug/breadcrumb.c` + `-Wl,--wrap=` on each init call in `main()`
+writes stage markers to a reserved RAM window at `0x2001FFE0` (shrink RAM to
+`0x1FFE0` in `merged.ld`), and strong `HardFault_Handler` /
+`app_error_fault_handler` overrides capture PC/LR/CFSR/HFSR/BFAR and spin
+instead of sleeping/resetting. Read back after boot with one-shot OpenOCD
+`dump_image`. First run pinpointed "entered `uwb_init`, BusFault, BFAR
+garbage" in one shot; a full-RAM `dump_image` + offline pointer walk plus an
+on-chip flash dump of the driver table (mismatch vs the ELF) nailed the
+self-erase. Keep this harness for future firmware bring-up.
+
 ### Debug session 2 (gdb attempt) — narrowed, then blocked by tooling
 - The hang is **after** C-runtime init but **before** USB/app init. Halting the
   running firmware always reports **"target in unknown state"** and then any
@@ -126,12 +167,21 @@ boot bugs prove stubborn.
 CLI image around; swap back anytime for the Pi/Python path.
 
 ## Next steps
-1. **Flash + verify the baseline** (`cli-firmware.hex`) via the Pi's J-Link and
-   confirm the CLI console still works — needs the board's J9 on a flashing host.
-2. Add a **SoftDevice (S113)** + nRF BLE stack; shift the app in flash (new
-   linker origin) and merge the SoftDevice hex when flashing.
+1. ~~Flash + verify the baseline~~ **DONE 2026-07-07**: GCC-built CLI boots,
+   console + listener + config save/load all verified on hardware. Board is
+   currently running this image (restore vendor: `tools/flash.sh cli`).
+2. Add a **SoftDevice (S113)** + nRF BLE stack (`nrf_sdh`, `ble_gatts`).
+   The flash map is already SoftDevice-shaped: MBR+S113 fit in 0x0–0x1CFFF
+   (S113 7.x ends < 0x1C000), fconfig page at 0x1E000, app at 0x1F000.
+   Work items: pick the S113 hex from the SDK's 16 bundled SoftDevices;
+   app vector table moves to the app base (SD forwards interrupts); add
+   `nrf_sdh` sources + `S113`/`SOFTDEVICE_PRESENT` defines; RAM base moves
+   up by the SD's RAM need (tune from `sd_ble_enable` return); FreeRTOS +
+   SD coexistence via the SDK's `nrf_sdh_freertos` helper.
 3. Add the **BLE GATT service** mirroring `uwb_explorer/ble.py`'s UUIDs +
-   `blecodec.py` wire format, fed from the on-chip UWB listener counters.
+   `blecodec.py` wire format, fed from the on-chip UWB listener counters
+   (same LSTAT counters `tools/detect.py` polls → same Geiger model as
+   `uwb_explorer/webmodel.py`).
 
 ## Reproduce the build
 ```

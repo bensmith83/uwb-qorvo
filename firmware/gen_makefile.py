@@ -32,9 +32,6 @@ SES_ONLY = ("thumb_crt0.s", "ses_startup_nrf52833.s", "ses_startup_nrf_common.s"
 FLASH_TABLES = r"""
         /* --- Qorvo QM33 SDK custom tables (from SES flash_placement.xml) --- */
         . = ALIGN(4);
-        __fconfig_start = .;
-        KEEP(*(.fconfig .fconfig.*))
-        . = ALIGN(4);
         __dw_drivers_start = .;
         KEEP(*(.dw_drivers .dw_drivers.*))
         __dw_drivers_end = .;
@@ -60,6 +57,38 @@ FLASH_TABLES = r"""
         __config_entry_end = .;
 """
 
+# The app SAVEs its config at runtime by page-erasing the flash page that
+# contains __fconfig_start (config.c: nrf_nvmc_page_erase(&__fconfig_start)).
+# So .fconfig MUST own a dedicated 4KB page with no code in it, exactly like
+# the vendor SES placement (FCONFIG_START=0x1E000, INIT_START=0x1F000,
+# vectors at 0).  Inlining it in .text made the firmware erase its own
+# .dw_drivers table on first config save -> BusFault in uwb_init.
+MEMORY_MAP = """MEMORY
+{
+  VECTORS (rx) : ORIGIN = 0x0, LENGTH = 0x1000
+  FCONFIG (r) : ORIGIN = 0x1e000, LENGTH = 0x1000
+  FLASH (rx) : ORIGIN = 0x1f000, LENGTH = 0x61000
+  RAM (rwx) : ORIGIN = 0x20000000, LENGTH = 0x20000
+  CODE_RAM (rwx) : ORIGIN = 0x800000, LENGTH = 0x20000
+}
+"""
+
+# Injected right before the .text output section.
+EARLY_SECTIONS = r"""
+  .isr_vector :
+  {
+    KEEP(*(.isr_vector))
+  } > VECTORS
+
+  .fconfig :
+  {
+    . = ALIGN(4);
+    __fconfig_start = .;
+    KEEP(*(.fconfig .fconfig.*))
+  } > FCONFIG
+
+"""
+
 # Injected as its own NOLOAD section in RAM, after .bss.
 RAM_TABLES = r"""
     .rconfig (NOLOAD) :
@@ -81,6 +110,11 @@ def build_linker_script(mdk: str) -> str:
     nrf_common.ld) and return the combined text."""
     xxaa = open(os.path.join(mdk, "nrf52833_xxaa.ld")).read()
     common = open(os.path.join(mdk, "nrf_common.ld")).read()
+    # vendor memory map: vectors at 0, dedicated fconfig page, code at 0x1f000
+    xxaa = re.sub(r'MEMORY\s*\{[^}]*\}', MEMORY_MAP, xxaa, count=1)
+    # vectors move to their own region; fconfig to its own erasable page
+    common = re.sub(r'\n\s*KEEP\(\*\(\.isr_vector\)\)', '', common, count=1)
+    common = re.sub(r'(\.text :)', EARLY_SECTIONS + r'  \1', common, count=1)
     # flash tables: inside .text, right after the .eh_frame keep (before } > FLASH)
     common = re.sub(r'(KEEP\(\*\(\.eh_frame\*\)\))',
                     r'\1\n' + FLASH_TABLES, common, count=1)
