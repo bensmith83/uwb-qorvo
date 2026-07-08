@@ -108,8 +108,16 @@ struct FrameDetailView: View {
 
     private func header(_ f: UWBFrame) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(f.isEncrypted ? "Encrypted UWB" : "Frame #\(f.seq ?? 0)")
-                .font(.title2).bold()
+            HStack(spacing: 8) {
+                Text(f.isEncrypted ? "Encrypted UWB" : "Frame #\(f.seq ?? 0)")
+                    .font(.title2).bold()
+                if f.crcFailed {
+                    Text("CRC FAIL").font(.caption).bold()
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(Color.orange.opacity(0.25)))
+                        .foregroundStyle(.orange)
+                }
+            }
             Text(rec.date.formatted(date: .long, time: .standard))
                 .font(.caption).foregroundStyle(.secondary)
             if let c = rec.channel, let k = rec.code {

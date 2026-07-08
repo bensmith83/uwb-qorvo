@@ -13,7 +13,7 @@ static int fmt100(char *out, int v)
 
 int frame_encode(const uint8_t *data, uint16_t len, const uint8_t ts[5],
                  int cfo_pphm, int rsl100, int fsl100, uint32_t seq,
-                 char *out, uint16_t cap)
+                 int crc_ok, char *out, uint16_t cap)
 {
     /* worst case: 32 hex chars + '+' + 3 signed fixed-points + fixed keys
      * ≈ 110 bytes; refuse anything that could overflow */
@@ -40,8 +40,8 @@ int frame_encode(const uint8_t *data, uint16_t len, const uint8_t ts[5],
     p += fmt100(p, fsl100);
     p += sprintf(p, ",\"o\":");
     p += fmt100(p, cfo_pphm);
-    p += sprintf(p, ",\"ts\":\"0x%02X%02X%02X%02X\"}",
-                 ts[4], ts[3], ts[2], ts[1]);
+    p += sprintf(p, ",\"ts\":\"0x%02X%02X%02X%02X\",\"crc\":%d}",
+                 ts[4], ts[3], ts[2], ts[1], crc_ok ? 1 : 0);
     return (int)(p - out);
 }
 

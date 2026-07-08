@@ -33,6 +33,7 @@ python3 firmware/gen_makefile.py "$EMPROJ" "$OUT" \
   --src "$(pwd)/firmware/ble/framefmt.c" \
   --src "$(pwd)/firmware/ble/sd_flash_wrap.c" \
   --wrap save_bssConfig \
+  --wrap listener2_configure_uwb \
   --src "$N/components/softdevice/common/nrf_sdh.c" \
   --src "$N/components/softdevice/common/nrf_sdh_ble.c" \
   --src "$N/components/softdevice/common/nrf_sdh_soc.c" \

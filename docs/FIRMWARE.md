@@ -328,6 +328,33 @@ on reboot); auto-sweep is **opt-in** via the app toggle and flagged
 experimental. Still open: whether heavy AirTag *reception* on a live code
 (no restart) is SD-stable — the next field test answers it.
 
+### iOS GATT caching hid the new characteristics (frame 0003, control 0004)
+The real reason the iPhone saw bars but no frame history AND the
+channel/preamble buttons did nothing: **CoreBluetooth caches the GATT
+database per device.** The phone first connected when the firmware had
+only the state char (0002); the frame (0003) and control (0004) chars,
+added later, were invisible to it. `bleak` on Linux doesn't cache, so it
+saw all three and worked — which is why every Pi-side test passed while
+the phone didn't. Proven: a forced frame push reached bleak fine
+(`hvx_err=0`); the phone's earlier `hvx_err` was the masked
+INVALID_CONN/stale value from the un-discovered char. Mitigation:
+enabled `BLE_GATTS_CFG_SERVICE_CHANGED` so the peer is told to
+re-discover; **first-time recovery still needs the phone to drop its
+cache** (toggle Bluetooth / forget the device). Lesson: don't add
+characteristics mid-project without Service Changed + a cache clear.
+
+### CRC-fail frame capture (control "F1"/"F0") — the real AirTag bytes
+AirTag STS frames fail CRC on a passive listener, so the vendor OK path
+never queues them (0 OK frames in a 589-ISR find). But the DW3110 still
+holds the bytes on a CRC error. `--wrap=listener2_configure_uwb` (it's
+in a different TU from its caller, so the wrap takes — unlike the same-TU
+`send_to_pc` case) slots a capture callback ahead of the vendor's error
+handler: it `dwt_readrxdata`s the failed frame + timestamp + RSSI (same
+ISR SPI the OK path already does), and `uwb_feed_frame_poll` pushes it
+with `"crc":0`. Off by default; toggled from the app. Verified stable on
+the Pi (toggle on/off, no crash). The app badges these "CRC FAIL" and
+shows the bytes (header decodes; STS body is ciphertext).
+
 ### Frame card was silent: HVN TX queue = 1 (state push starved the frame push)
 Bars (state char) updated but the frame char never did. On-device: the
 frame push logged an hvx error while the state push worked. Cause: S113's

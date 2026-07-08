@@ -37,16 +37,16 @@ int main(void)
         char out[256];
         if (kind[0] == 'F')
         {
-            int cfo, rsl, fsl;
+            int cfo, rsl, fsl, crc;
             unsigned long seq;
-            if (scanf(" %511s %15s %d %d %d %lu",
-                      hex, tshex, &cfo, &rsl, &fsl, &seq) != 6)
+            if (scanf(" %511s %15s %d %d %d %lu %d",
+                      hex, tshex, &cfo, &rsl, &fsl, &seq, &crc) != 7)
                 break;
             uint8_t data[256], ts[5] = {0};
             int n = parse_hex(hex, data, sizeof data);
             parse_hex(tshex, ts, sizeof ts);
             frame_encode(data, (uint16_t)n, ts, cfo, rsl, fsl,
-                         (uint32_t)seq, out, sizeof out);
+                         (uint32_t)seq, crc, out, sizeof out);
         }
         else if (kind[0] == 'S')
         {

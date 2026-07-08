@@ -47,6 +47,8 @@ struct ContentView: View {
                 frameCard(f, tint: s.levelColor)
             }
 
+            captureToggle
+
             Text(note)
                 .font(.footnote)
                 .foregroundStyle((s.decoded ?? 0) > 0 ? s.levelColor : .secondary)
@@ -109,6 +111,12 @@ struct ContentView: View {
                 HStack {
                     Text("LAST FRAME #\(f.seq ?? 0)")
                         .font(.caption2).tracking(1).foregroundStyle(.secondary)
+                    if f.crcFailed {
+                        Text("CRC FAIL").font(.caption2).bold()
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.orange.opacity(0.25)))
+                            .foregroundStyle(.orange)
+                    }
                     Spacer()
                     Text(f.pathText)
                         .font(.caption2).bold().tracking(1)
@@ -233,6 +241,23 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+    }
+
+    /// Toggle raw capture of CRC-failed frames — the encrypted STS frames
+    /// (AirTag) that normally register only as energy. On, the byte card
+    /// shows their actual bytes (header decodes; body is ciphertext).
+    private var captureToggle: some View {
+        Toggle(isOn: Binding(get: { ble.captureFailed },
+                             set: { ble.setCaptureFailed($0) })) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Capture encrypted bytes").font(.subheadline).bold()
+                Text("Show raw bytes of CRC-failed frames (AirTag)")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+        .disabled(!ble.isConnected)
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
     }

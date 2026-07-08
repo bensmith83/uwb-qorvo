@@ -31,7 +31,7 @@
  */
 int frame_encode(const uint8_t *data, uint16_t len, const uint8_t ts[5],
                  int cfo_pphm, int rsl100, int fsl100, uint32_t seq,
-                 char *out, uint16_t cap);
+                 int crc_ok, char *out, uint16_t cap);
 
 /*
  * Render an "encrypted / undecodable energy" marker for the frame

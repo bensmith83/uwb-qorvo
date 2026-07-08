@@ -28,6 +28,65 @@ extern void ble_frame_push(const char *json, uint16_t len);
 
 extern const app_definition_t helpers_app_listener[];
 
+/*
+ * CRC-fail frame capture (control command "F1"/"F0", off by default).
+ *
+ * AirTag / Nearby-Interaction frames are STS-secured and fail the CRC on
+ * a passive listener, so the vendor's OK callback never queues them and
+ * the byte card only ever sees the rare clean frame. But the DW3110 still
+ * holds the received bytes on a CRC error — so we intercept the RX error
+ * callback and read them out before the vendor re-arms RX.
+ *
+ * The interception uses --wrap=listener2_configure_uwb (build-ble.sh):
+ * that function is defined in listener2_dw3000.c and CALLED from
+ * listener2.c — different translation units, so unlike the same-TU
+ * send_to_pc case, the linker wrap actually takes. We slot our own error
+ * callback in and chain to the vendor's. Reading dwt_readrxdata /
+ * timestamp / RSSI in the RX ISR is the same work the OK path already
+ * does, so no new SD-timing risk. */
+static volatile int m_capture_fail;
+static volatile uint32_t m_fail_seq;
+static volatile uint16_t m_fail_len;
+static volatile uint8_t m_fail_data[FRAME_HEX_MAX];
+static volatile uint8_t m_fail_ts[5];
+static volatile int m_fail_rsl, m_fail_fsl;
+
+void uwb_feed_request_capture(int on) { m_capture_fail = on ? 1 : 0; }
+
+static dwt_cb_t m_real_rx_err;
+
+static void capture_rx_err_cb(const dwt_cb_data_t *rxd)
+{
+    if (m_capture_fail && rxd != NULL && rxd->datalength > 0)
+    {
+        uint16_t n = rxd->datalength;
+        if (n > FRAME_HEX_MAX)
+        {
+            n = FRAME_HEX_MAX;
+        }
+        dwt_readrxdata((uint8_t *)m_fail_data, n, 0);
+        listener2_readrxtimestamp((uint8_t *)m_fail_ts);
+        int rsl, fsl;
+        listener2_rssi_cal(&rsl, &fsl);
+        m_fail_rsl = rsl;
+        m_fail_fsl = fsl;
+        m_fail_len = rxd->datalength;
+        m_fail_seq++;
+    }
+    if (m_real_rx_err != NULL)
+    {
+        m_real_rx_err(rxd);
+    }
+}
+
+extern void __real_listener2_configure_uwb(dwt_cb_t ok, dwt_cb_t to,
+                                           dwt_cb_t err);
+void __wrap_listener2_configure_uwb(dwt_cb_t ok, dwt_cb_t to, dwt_cb_t err)
+{
+    m_real_rx_err = err;
+    __real_listener2_configure_uwb(ok, to, capture_rx_err_cb);
+}
+
 static detector_t m_det;
 static int m_live;
 static unsigned m_tick;
@@ -343,13 +402,49 @@ void uwb_feed_frame_poll(void)
               (uint32_t)crcb + (uint32_t)stse + (uint32_t)to;
     taskEXIT_CRITICAL();
 
+    /* snapshot the latest CRC-failed capture, if enabled */
+    static uint32_t last_fail_seq;
+    uint8_t fdata[FRAME_HEX_MAX], fts[5];
+    uint16_t flen = 0;
+    int frsl = 0, ffsl = 0;
+    uint32_t fseq = 0;
+    int have_fail = 0;
+    if (m_capture_fail)
+    {
+        taskENTER_CRITICAL();
+        fseq = m_fail_seq;
+        if (fseq != last_fail_seq)
+        {
+            have_fail = 1;
+            flen = m_fail_len;
+            memcpy(fdata, (const void *)m_fail_data, sizeof fdata);
+            memcpy(fts, (const void *)m_fail_ts, sizeof fts);
+            frsl = m_fail_rsl;
+            ffsl = m_fail_fsl;
+        }
+        taskEXIT_CRITICAL();
+    }
+
     static char json[160];
     if (fresh)
     {
+        /* a genuinely clean (CRC-good) frame — rare for encrypted traffic */
         int cfo_pphm =
             (int)((float)cfo * (CLOCK_OFFSET_PPM_TO_RATIO * 1e6 * 100));
         int n = frame_encode(data, dlen, ts, cfo_pphm, rsl100, fsl100, seq,
-                             json, sizeof json);
+                             1, json, sizeof json);
+        if (n > 0)
+        {
+            ble_frame_push(json, (uint16_t)n);
+        }
+    }
+    else if (have_fail)
+    {
+        /* CRC-failed frame captured off the error path: real bytes (header
+         * decodes; STS body is ciphertext), flagged crc:0 */
+        last_fail_seq = fseq;
+        int n = frame_encode(fdata, flen, fts, 0, frsl, ffsl, fseq, 0, json,
+                             sizeof json);
         if (n > 0)
         {
             ble_frame_push(json, (uint16_t)n);
@@ -357,9 +452,9 @@ void uwb_feed_frame_poll(void)
     }
     else if (enc_seq != last_enc_seq)
     {
-        /* no readable frame this tick, but the radio logged failed
-         * receptions (STS-encrypted traffic like an AirTag) — surface
-         * that so the card shows energy instead of staying blank */
+        /* no frame bytes this tick, but the radio logged failed
+         * receptions — surface the energy signature so the card isn't
+         * blank (this is the default AirTag view with capture off) */
         last_enc_seq = enc_seq;
         int n = frame_encode_encrypted(enc_seq, phe, crcb, stse, to,
                                        json, sizeof json);

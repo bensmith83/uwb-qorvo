@@ -39,6 +39,15 @@ final class BLEManager: NSObject, ObservableObject {
     /// (true), or hold the current code (false).
     func setAutoScan(_ on: Bool) { writeCtrl(on ? "A" : "M") }
 
+    /// Capture CRC-failed frames (the encrypted STS frames from an AirTag).
+    /// Lets the byte card show the real frame bytes even though they fail
+    /// their integrity check. Board default is off; re-sent on reconnect.
+    @Published var captureFailed = false
+    func setCaptureFailed(_ on: Bool) {
+        captureFailed = on
+        writeCtrl(on ? "F1" : "F0")
+    }
+
     private func writeCtrl(_ cmd: String) {
         guard let p = peripheral, let ctrl = ctrlChar else { return }
         p.writeValue(Data(cmd.utf8), for: ctrl, type: .withResponse)
@@ -147,6 +156,8 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
                 p.readValue(for: ch)
             case Self.ctrlCharUUID:
                 ctrlChar = ch
+                // the board resets capture to off on each connect — restore
+                if captureFailed { p.writeValue(Data("F1".utf8), for: ch, type: .withResponse) }
             default:
                 break
             }

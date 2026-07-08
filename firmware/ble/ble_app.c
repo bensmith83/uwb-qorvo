@@ -12,6 +12,7 @@
  */
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "FreeRTOS.h"
@@ -50,6 +51,7 @@ extern void uwb_feed_frame_poll(void); /* newest-frame push (6e5f0003) */
 extern void uwb_feed_request_channel(int ch);
 extern void uwb_feed_request_code(int code);
 extern void uwb_feed_request_auto(int on);
+extern void uwb_feed_request_capture(int on);
 extern void uwb_feed_control_poll(void);
 /* breadcrumb.c: stores a diagnostic word readable over SWD */
 extern void bread_note(uint32_t v);
@@ -173,6 +175,11 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
                 }
                 uwb_feed_request_code(code);
             }
+            else if ((d[0] == 'F' || d[0] == 'f') && n >= 2)
+            {
+                /* "F1"/"F0": capture CRC-failed frames (AirTag bytes) */
+                uwb_feed_request_capture(d[1] == '1');
+            }
             else
             {
                 uint8_t b = (d[0] == 'C' || d[0] == 'c') && n >= 2 ? d[1] : d[0];
@@ -276,6 +283,8 @@ void ble_frame_push(const char *json, uint16_t len)
     /* DIAG3[2] at 0x2001FF88 (clear of the fault window at 0x2001FFE0) */
     *(volatile uint32_t *)0x2001FF88u =
         0xE5E50000u | ((vs_err & 0xFFu) << 8) | (hvx_err & 0xFFu);
+    *(volatile uint32_t *)0x2001FF98u = hvx_err;       /* DIAG3[6]: full err */
+    *(volatile uint32_t *)0x2001FF9Cu += 1;            /* DIAG3[7]: push count */
 }
 
 static void advertising_init(void)
@@ -406,6 +415,18 @@ void ble_app_init(void)
     gatts_cfg.conn_cfg.conn_cfg_tag = APP_BLE_CONN_CFG_TAG;
     gatts_cfg.conn_cfg.params.gatts_conn_cfg.hvn_tx_queue_size = 4;
     APP_ERROR_CHECK(sd_ble_cfg_set(BLE_CONN_CFG_GATTS, &gatts_cfg, ram_start));
+
+    /* Expose the GATT Service Changed characteristic. We added
+     * characteristics (frame 0003, control 0004) after early clients had
+     * already cached the smaller DB — iOS caches aggressively and won't
+     * see the new ones. Service Changed lets the peer know to re-discover.
+     * (First-time recovery still needs the phone to drop its cache: toggle
+     * Bluetooth or forget the device.) */
+    ble_cfg_t sc_cfg;
+    memset(&sc_cfg, 0, sizeof sc_cfg);
+    sc_cfg.gatts_cfg.service_changed.service_changed = 1;
+    APP_ERROR_CHECK(
+        sd_ble_cfg_set(BLE_GATTS_CFG_SERVICE_CHANGED, &sc_cfg, ram_start));
 
     ret_code_t err = nrf_sdh_ble_enable(&ram_start);
     bread_note(ram_start); /* required app RAM base — read via SWD to tune */

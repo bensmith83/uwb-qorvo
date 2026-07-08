@@ -69,14 +69,18 @@ struct UWBFrame: Codable, Hashable {
     var crcb: Int?       // bad-CRC frames
     var stse: Int?       // STS errors (the encryption tell)
     var to: Int?         // SFD/preamble/RX timeouts
+    var crc: Int?        // 1 = CRC passed, 0 = captured CRC-failed frame
 
     enum CodingKeys: String, CodingKey {
         case seq = "i", length = "n", bytesHex = "b"
         case rsl, fsl, cfoPPM = "o", timestamp = "ts"
-        case enc, phe, crcb, stse, to
+        case enc, phe, crcb, stse, to, crc
     }
 
     var isEncrypted: Bool { enc == 1 }
+    /// A frame we captured off the error path — real bytes, but it failed
+    /// its integrity check (the normal case for STS-encrypted UWB).
+    var crcFailed: Bool { crc == 0 }
 }
 
 /// One captured frame kept in History, tagged with when it arrived and

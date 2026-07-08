@@ -34,10 +34,10 @@ def harness(tmp_path_factory):
 
 
 def run1(exe, data: bytes, ts: bytes, cfo_pphm: int, rsl100: int,
-         fsl100: int, seq: int) -> str:
+         fsl100: int, seq: int, crc: int = 1) -> str:
     line = " ".join([
         "F", data.hex().upper() if data else "-", ts.hex().upper(),
-        str(cfo_pphm), str(rsl100), str(fsl100), str(seq)])
+        str(cfo_pphm), str(rsl100), str(fsl100), str(seq), str(crc)])
     out = subprocess.run([exe], input=line + "\n",
                          capture_output=True, text=True, check=True)
     return out.stdout.strip()
@@ -49,14 +49,14 @@ def fmt100(v: int) -> str:
 
 
 def oracle(data: bytes, ts: bytes, cfo_pphm: int, rsl100: int,
-           fsl100: int, seq: int) -> str:
+           fsl100: int, seq: int, crc: int = 1) -> str:
     b = data[:FRAME_HEX_MAX].hex().upper()
     if len(data) > FRAME_HEX_MAX:
         b += "+"
     ts32 = f"0x{ts[4]:02X}{ts[3]:02X}{ts[2]:02X}{ts[1]:02X}"
     return (f'{{"i":{seq},"n":{len(data)},"b":"{b}",'
             f'"rsl":{fmt100(rsl100)},"fsl":{fmt100(fsl100)},'
-            f'"o":{fmt100(cfo_pphm)},"ts":"{ts32}"}}')
+            f'"o":{fmt100(cfo_pphm)},"ts":"{ts32}","crc":{crc}}}')
 
 
 CASES = [
@@ -85,6 +85,14 @@ class TestFrameEncode:
         doc = json.loads(run1(harness, data, ts, cfo, rsl, fsl, seq))
         assert doc["n"] == len(data)
         assert doc["i"] == seq
+        assert doc["crc"] == 1
+
+    def test_crc_failed_flag(self, harness):
+        out = run1(harness, bytes.fromhex("492B0100"), bytes(5),
+                   0, -8000, -8100, 5, crc=0)
+        assert json.loads(out)["crc"] == 0
+        assert out == oracle(bytes.fromhex("492B0100"), bytes(5),
+                             0, -8000, -8100, 5, crc=0)
 
     def test_fits_one_notification(self, harness):
         # worst case must fit PAYLOAD_MAX (128) alongside MTU 131

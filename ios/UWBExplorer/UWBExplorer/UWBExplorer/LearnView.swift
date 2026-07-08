@@ -34,13 +34,14 @@ struct LearnView: View {
         VStack(alignment: .leading, spacing: 8) {
             Text("ANATOMY OF A FRAME").font(.caption2).tracking(1).foregroundStyle(.secondary)
             HStack(spacing: 3) {
-                seg("Preamble", 2.2, .green)
-                seg("SFD", 1, .green)
-                seg("PHR", 1.2, .green)
-                seg("STS", 2.4, .orange)
-                seg("Payload", 1.6, .orange)
-                seg("CRC", 0.9, .green)
+                seg("Preamble", .green)
+                seg("SFD", .green)
+                seg("PHR", .green)
+                seg("STS", .orange)
+                seg("Payload", .orange)
+                seg("CRC", .green)
             }
+            .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 16) {
                 legend(.green, "in the clear")
                 legend(.orange, "encrypted")
@@ -52,15 +53,14 @@ struct LearnView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(.ultraThinMaterial))
     }
 
-    private func seg(_ name: String, _ flex: Double, _ color: Color) -> some View {
+    private func seg(_ name: String, _ color: Color) -> some View {
         Text(name)
-            .font(.system(size: 10, weight: .semibold))
-            .lineLimit(1).minimumScaleFactor(0.6)
+            .font(.system(size: 9, weight: .semibold))
+            .lineLimit(1).minimumScaleFactor(0.5)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
+            .padding(.vertical, 10).padding(.horizontal, 2)
             .background(RoundedRectangle(cornerRadius: 5).fill(color.opacity(0.22)))
             .overlay(RoundedRectangle(cornerRadius: 5).stroke(color.opacity(0.5)))
-            .layoutPriority(flex)
     }
 
     private func legend(_ c: Color, _ t: String) -> some View {
