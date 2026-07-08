@@ -27,8 +27,19 @@ _ADDR = {0: "None", 1: "Reserved", 2: "Short/16-bit", 3: "Extended/64-bit"}
 _VER = {0: "2003", 1: "2006", 2: "IEEE 802.15.4-2015 (4z)", 3: "Reserved"}
 
 
-def dissect(frame: bytes) -> list[Field]:
+def dissect(frame: bytes, total: int | None = None) -> list[Field]:
+    """Decode the field tree of a received frame.
+
+    `frame` is the bytes actually captured; `total` is the frame's true
+    length when only a prefix was captured (e.g. the BLE path truncates to
+    the first 16 bytes but reports the real length separately). When `total`
+    exceeds len(frame), the secured body and FCS are reported by their true
+    position/size but flagged as not fully carried, rather than fabricated
+    from the truncated buffer.
+    """
     out: list[Field] = []
+    avail = len(frame)
+    n = total if total is not None else avail
     fc = int.from_bytes(frame[:2], "little")
     ftype = fc & 0x7
     sec = (fc >> 3) & 1
@@ -79,21 +90,38 @@ def dissect(frame: bytes) -> list[Field]:
         pos += 8
 
     fcs_len = 2
-    body_len = len(frame) - pos - fcs_len
+    body_len = n - pos - fcs_len
     if body_len > 0:
+        captured = max(0, min(body_len, avail - pos))
         note = ("Encrypted / authenticated (Security Enabled = True): "
                 "auxiliary security header, STS-scrambled ranging data and "
                 "payload. Opaque without the session key."
                 if sec else
                 "Information elements and MAC payload.")
+        if captured < body_len:
+            note += (f" Only the first {avail} B of this {n} B frame were "
+                     "carried over BLE — capture the full frame (Pi USB path) "
+                     "to see the whole body.")
+            value = f"{body_len} bytes ({captured} captured)"
+        else:
+            value = f"{body_len} bytes"
         out.append(Field("Secured Payload" if sec else "MAC Payload",
-                         f"{body_len} bytes", pos, body_len, note=note))
+                         value, pos, body_len, note=note))
         pos += body_len
 
-    if pos + 2 <= len(frame):
-        out.append(Field("FCS (CRC-16)",
-                          f"0x{int.from_bytes(frame[pos:pos+2],'little'):04X}", pos, 2,
-                          note="Frame check sequence, appended by the radio."))
+    if pos + fcs_len <= n:
+        if pos + fcs_len <= avail:
+            out.append(Field("FCS (CRC-16)",
+                              f"0x{int.from_bytes(frame[pos:pos+2],'little'):04X}", pos, 2,
+                              note="Frame check sequence as received. STS-secured "
+                                   "frames fail this on a passive listener (the radio "
+                                   "flags them CRC-bad), so treat it as the raw trailer, "
+                                   "not a validated checksum."))
+        else:
+            out.append(Field("FCS (CRC-16)", "not captured", pos, 2,
+                              note=f"At byte offset {pos}, beyond the first {avail} B "
+                                   "carried over BLE — capture the full frame (Pi USB "
+                                   "path) to read it."))
     return out
 
 

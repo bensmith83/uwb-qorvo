@@ -57,3 +57,38 @@ int frame_encode_encrypted(uint32_t seq, int phe, int crcb, int stse,
                    "\"stse\":%d,\"to\":%d}",
                    (unsigned long)seq, phe, crcb, stse, to);
 }
+
+int frame_frag_count(uint16_t len)
+{
+    return len > 0 ? (len + FRAG_CHUNK - 1) / FRAG_CHUNK : 0;
+}
+
+int frame_frag_encode(const uint8_t *data, uint16_t len, uint32_t seq,
+                      int part, char *out, uint16_t cap)
+{
+    /* envelope (~37) + 2*FRAG_CHUNK hex; must fit one notification */
+    if (cap < 128)
+    {
+        return 0;
+    }
+    int q = frame_frag_count(len);
+    if (part < 0 || part >= q)
+    {
+        return 0;
+    }
+    unsigned start = (unsigned)part * FRAG_CHUNK;
+    unsigned end = start + FRAG_CHUNK;
+    if (end > len)
+    {
+        end = len;
+    }
+    char *p = out;
+    p += sprintf(p, "{\"i\":%lu,\"p\":%d,\"q\":%d,\"b\":\"",
+                 (unsigned long)seq, part, q);
+    for (unsigned i = start; i < end; i++)
+    {
+        p += sprintf(p, "%02X", data[i]);
+    }
+    p += sprintf(p, "\"}");
+    return (int)(p - out);
+}

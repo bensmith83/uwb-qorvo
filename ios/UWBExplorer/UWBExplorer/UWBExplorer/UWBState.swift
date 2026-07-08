@@ -83,6 +83,22 @@ struct UWBFrame: Codable, Hashable {
     var crcFailed: Bool { crc == 0 }
 }
 
+/// One fragment of a full frame's bytes, streamed on the frame
+/// characteristic (6e5f0003) so frames larger than one BLE notification can
+/// be reassembled on the phone. Firmware: framefmt.c `frame_frag_encode`.
+/// All fields are required, so a summary/energy JSON (no "p"/"q") fails to
+/// decode as a fragment and is handled on the normal path instead.
+struct FrameFragment: Decodable {
+    let seq: Int      // "i" — ties fragments together and to the summary push
+    let part: Int     // "p" — 0-based part index
+    let nparts: Int   // "q" — total parts for this frame
+    let hex: String   // "b" — this part's bytes as hex
+
+    enum CodingKeys: String, CodingKey {
+        case seq = "i", part = "p", nparts = "q", hex = "b"
+    }
+}
+
 /// One captured frame kept in History, tagged with when it arrived and
 /// the radio config it was heard on.
 struct FrameRecord: Identifiable, Codable, Hashable {

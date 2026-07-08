@@ -113,6 +113,47 @@ final class BLEManager: NSObject, ObservableObject {
         }
     }
 
+    // MARK: - Full-frame fragment reassembly
+    //
+    // The board's summary push carries only the first 16 bytes; it also
+    // streams the WHOLE frame as {"i":seq,"p":part,"q":nparts,"b":"hex"}
+    // fragment notifications (firmware/ble/framefmt.c frame_frag_encode).
+    // Collect the parts for one seq and, once all q are in, upgrade the
+    // matching frame's bytes to the full frame so its 802.15.4z decode shows
+    // the whole body + FCS. A change of seq drops any partial reassembly.
+
+    private var fragSeq: Int?
+    private var fragParts: [Int: String] = [:]
+
+    private func ingestFragment(_ f: FrameFragment) {
+        guard f.nparts > 0, f.part >= 0, f.part < f.nparts else { return }
+        if fragSeq != f.seq {           // new frame — start over
+            fragSeq = f.seq
+            fragParts = [:]
+        }
+        fragParts[f.part] = f.hex
+        guard fragParts.count == f.nparts else { return }
+        let ordered = (0..<f.nparts).compactMap { fragParts[$0] }
+        guard ordered.count == f.nparts else { return }   // a gap remains
+        applyFullBytes(seq: f.seq, hex: ordered.joined())
+        fragSeq = nil
+        fragParts = [:]
+    }
+
+    /// Replace the (truncated) bytes of the frame with sequence `seq` — the
+    /// live card and its History row — with the fully reassembled hex.
+    private func applyFullBytes(seq: Int, hex: String) {
+        if lastFrame?.seq == seq {
+            lastFrame?.bytesHex = hex
+        }
+        if let i = frameHistory.firstIndex(where: {
+            $0.frame.seq == seq && !$0.frame.isEncrypted
+        }) {
+            frameHistory[i].frame.bytesHex = hex
+            saveHistory()
+        }
+    }
+
     /// Record a frame in history. A real decoded frame is always kept as
     /// its own entry (those are rare and precious); a run of
     /// encrypted-energy snapshots within 5 s collapses into one updating
@@ -197,9 +238,13 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
             case Self.ctrlCharUUID:
                 n += 1
                 ctrlChar = ch
-                // the board resets these to defaults on each connect — restore
                 if captureFailed { p.writeValue(Data("F1".utf8), for: ch, type: .withoutResponse) }
-                if stsMode != 0 { p.writeValue(Data("S\(stsMode)".utf8), for: ch, type: .withoutResponse) }
+                // STS mode lives in the board's RAM config and persists
+                // across BLE reconnects (only a power-cycle clears it), so an
+                // experimental SP1/2/3 could still be live even though the app
+                // shows SP0. ALWAYS assert our mode — including S0 — so a
+                // byte-less experimental mode can never strand us.
+                p.writeValue(Data("S\(stsMode)".utf8), for: ch, type: .withoutResponse)
             default:
                 break
             }
@@ -210,6 +255,12 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
         guard let data = ch.value else { return }
         if ch.uuid == Self.frameCharUUID {
+            // A fragment of a full frame? (has "p"/"q"; try this first — it
+            // only decodes when those are present, so summaries fall through.)
+            if let frag = try? JSONDecoder().decode(FrameFragment.self, from: data) {
+                DispatchQueue.main.async { self.ingestFragment(frag) }
+                return
+            }
             // Initial value is "{}" — all-nil decode means no frame yet.
             guard let frame = try? JSONDecoder().decode(UWBFrame.self, from: data),
                   frame.seq != nil else { return }

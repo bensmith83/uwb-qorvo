@@ -320,6 +320,30 @@ void ble_frame_push(const char *json, uint16_t len)
     *(volatile uint32_t *)0x2001FF9Cu += 1;            /* DIAG3[7]: push count */
 }
 
+/* Notify-only push on the frame characteristic (no value_set — this is a
+ * transient fragment, not the readable "latest frame" value). Returns the
+ * sd_ble_gatts_hvx result so the caller can stop when the SD's HVN queue is
+ * full (NRF_ERROR_RESOURCES) and resume on the next tick. */
+uint32_t ble_frame_notify(const uint8_t *data, uint16_t len)
+{
+    uint16_t conn = m_conn_handle;
+    if (conn == BLE_CONN_HANDLE_INVALID)
+    {
+        return NRF_ERROR_INVALID_STATE;
+    }
+    if (len > PAYLOAD_MAX)
+    {
+        len = PAYLOAD_MAX;
+    }
+    ble_gatts_hvx_params_t hvx;
+    memset(&hvx, 0, sizeof hvx);
+    hvx.handle = m_frame_handles.value_handle;
+    hvx.type = BLE_GATT_HVX_NOTIFICATION;
+    hvx.p_len = &len;
+    hvx.p_data = data;
+    return sd_ble_gatts_hvx(conn, &hvx);
+}
+
 static void advertising_init(void)
 {
     ble_uuid_t adv_uuid = {.uuid = UUID_SERVICE, .type = m_uuid_type};

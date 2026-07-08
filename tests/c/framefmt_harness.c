@@ -57,6 +57,20 @@ int main(void)
             frame_encode_encrypted((uint32_t)seq, phe, crcb, stse, to,
                                    out, sizeof out);
         }
+        else if (kind[0] == 'G')
+        {
+            /* one fragment: G <hexbytes|-> <seq> <part> */
+            unsigned long seq;
+            int part;
+            if (scanf(" %511s %lu %d", hex, &seq, &part) != 3)
+                break;
+            uint8_t data[256];
+            int n = parse_hex(hex, data, sizeof data);
+            int r = frame_frag_encode(data, (uint16_t)n, (uint32_t)seq, part,
+                                      out, sizeof out);
+            if (r <= 0)
+                strcpy(out, "");
+        }
         else
         {
             break;

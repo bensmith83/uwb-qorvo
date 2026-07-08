@@ -101,6 +101,61 @@ class TestFrameEncode:
         assert len(out) <= 128
 
 
+FRAG_CHUNK = 40  # bytes of frame carried per fragment notification
+
+
+def run_frag(exe, data: bytes, seq: int, part: int) -> str:
+    line = f"G {data.hex().upper() if data else '-'} {seq} {part}"
+    out = subprocess.run([exe], input=line + "\n",
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def frag_count(n: int) -> int:
+    return (n + FRAG_CHUNK - 1) // FRAG_CHUNK if n > 0 else 0
+
+
+class TestFragmentEncode:
+    # frames of assorted lengths, incl. the 69-byte AirTag reference size,
+    # exact multiples of the chunk, and the 127-byte max PSDU
+    FRAMES = [
+        bytes(range(69)),
+        bytes(range(40)),      # exactly one chunk
+        bytes(range(80)),      # exactly two chunks
+        bytes([0xAB] * 127),   # max 802.15.4 PSDU
+        bytes.fromhex("492B0100" + "FF" * 65),  # airtag-ish header + body
+    ]
+
+    @pytest.mark.parametrize("frame", FRAMES)
+    def test_fragments_reassemble_to_original(self, harness, frame):
+        q = frag_count(len(frame))
+        assert q >= 1
+        parts = {}
+        for p in range(q):
+            doc = json.loads(run_frag(harness, frame, seq=1234, part=p))
+            assert doc["i"] == 1234
+            assert doc["p"] == p
+            assert doc["q"] == q
+            parts[p] = doc["b"]
+        # every part present exactly once, in-order concat rebuilds the frame
+        assert set(parts) == set(range(q))
+        rebuilt = "".join(parts[p] for p in range(q))
+        assert rebuilt == frame.hex().upper()
+
+    @pytest.mark.parametrize("frame", FRAMES)
+    def test_each_fragment_fits_one_notification(self, harness, frame):
+        q = frag_count(len(frame))
+        for p in range(q):
+            assert len(run_frag(harness, frame, seq=4294967295, part=p)) <= 128
+
+    def test_out_of_range_part_emits_nothing(self, harness):
+        assert run_frag(harness, bytes(range(69)), seq=1, part=99) == ""
+
+    def test_empty_frame_has_no_fragments(self, harness):
+        assert frag_count(0) == 0
+        assert run_frag(harness, b"", seq=1, part=0) == ""
+
+
 def run_enc(exe, seq, phe, crcb, stse, to):
     line = f"S {seq} {phe} {crcb} {stse} {to}"
     out = subprocess.run([exe], input=line + "\n",

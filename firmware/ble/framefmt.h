@@ -3,10 +3,20 @@
 
 #include <stdint.h>
 
-/* Bytes of frame payload included as hex in the "b" field; longer frames
- * are truncated with a trailing '+' (mirrors the vendor listener's fast
- * mode). Keeps the worst-case JSON inside one 128-byte notification. */
+/* Bytes of frame payload included as hex in the summary "b" field; longer
+ * frames are truncated with a trailing '+' (mirrors the vendor listener's
+ * fast mode). Keeps the worst-case summary JSON inside one 128-byte
+ * notification. The FULL frame is delivered separately as fragments (see
+ * frame_frag_encode) so the phone can reassemble the whole thing. */
 #define FRAME_HEX_MAX 16
+
+/* Max frame bytes we capture and stream (802.15.4 PSDU max is 127). */
+#define FRAME_FULL_MAX 127
+
+/* Frame bytes carried per fragment notification. 40 B -> 80 hex chars;
+ * with the fragment JSON envelope this stays inside one 128-byte
+ * notification (see frame_frag_encode / tests/test_framefmt.py). */
+#define FRAG_CHUNK 40
 
 /*
  * Render one received UWB frame as compact JSON for the frame
@@ -52,5 +62,29 @@ int frame_encode(const uint8_t *data, uint16_t len, const uint8_t ts[5],
  */
 int frame_encode_encrypted(uint32_t seq, int phe, int crcb, int stse,
                            int to, char *out, uint16_t cap);
+
+/* Number of FRAG_CHUNK-sized fragments a `len`-byte frame splits into
+ * (0 for an empty frame). */
+int frame_frag_count(uint16_t len);
+
+/*
+ * Render one fragment of a full frame's bytes as compact JSON for the
+ * frame characteristic (6e5f0003-...), so the phone can reassemble frames
+ * larger than one notification:
+ *
+ *   {"i":7,"p":0,"q":2,"b":"492B0100FF..."}
+ *
+ *   i    frame sequence number — ties fragments to the summary push and to
+ *        each other; a change means a new frame (drop any partial reassembly)
+ *   p    part index, 0-based
+ *   q    total number of parts for this frame
+ *   b    this part's bytes as hex (FRAG_CHUNK bytes, fewer on the last part)
+ *
+ * `part` selects the slice [part*FRAG_CHUNK, +FRAG_CHUNK). Returns the
+ * string length written (excluding NUL), or 0 if `part` is out of range,
+ * the frame is empty, or the buffer is too small.
+ */
+int frame_frag_encode(const uint8_t *data, uint16_t len, uint32_t seq,
+                      int part, char *out, uint16_t cap);
 
 #endif /* FRAMEFMT_H */

@@ -160,6 +160,7 @@ struct ContentView: View {
                             .background(Capsule().fill(Color.orange.opacity(0.25)))
                             .foregroundStyle(.orange)
                     }
+                    stsBadge
                     Spacer()
                     Text(f.pathText)
                         .font(.caption2).bold().tracking(1)
@@ -190,6 +191,7 @@ struct ContentView: View {
             HStack {
                 Text("ENCRYPTED UWB").font(.caption2).tracking(1)
                     .foregroundStyle(.secondary)
+                stsBadge
                 Spacer()
                 Label("STS", systemImage: "lock.fill")
                     .font(.caption2).bold()
@@ -209,6 +211,25 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
         .animation(.easeInOut(duration: 0.2), value: f.seq)
+    }
+
+    /// Shows the live STS receive mode on the frame card. SP0 is the only
+    /// mode that yields readable bytes; SP1/2/3 are flagged orange with a
+    /// "no bytes" hint because they suppress the plaintext payload (SP3 has
+    /// no data at all; SP1/2 hide it behind an STS block we can't verify).
+    @ViewBuilder
+    private var stsBadge: some View {
+        if ble.stsMode == 0 {
+            Text("SP0").font(.caption2).bold()
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Capsule().fill(Color.gray.opacity(0.18)))
+                .foregroundStyle(.secondary)
+        } else {
+            Text("SP\(ble.stsMode) · no bytes").font(.caption2).bold()
+                .padding(.horizontal, 5).padding(.vertical, 1)
+                .background(Capsule().fill(Color.orange.opacity(0.25)))
+                .foregroundStyle(.orange)
+        }
     }
 
     private func frameStat(_ title: String, _ value: String) -> some View {

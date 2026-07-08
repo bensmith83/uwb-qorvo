@@ -76,6 +76,14 @@ struct FrameDetailView: View {
                             .font(.system(.footnote, design: .monospaced))
                             .textSelection(.enabled)
                     }
+                    let fields = FrameDecode.dissect(hex: hex, total: f.length)
+                    if !fields.isEmpty {
+                        section("DECODED (802.15.4z)") {
+                            VStack(alignment: .leading, spacing: 10) {
+                                ForEach(fields) { field in fieldRow(field) }
+                            }
+                        }
+                    }
                 }
                 if f.isEncrypted {
                     section("WHY NO BYTES") {
@@ -123,6 +131,41 @@ struct FrameDetailView: View {
             if let c = rec.channel, let k = rec.code {
                 Text("Channel \(c) · preamble code \(k)")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// One decoded 802.15.4z field: name + value, its byte range, an
+    /// optional note, and (for the Frame Control Field) its bit breakdown.
+    private func fieldRow(_ field: FrameField) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(field.name).font(.footnote).bold()
+                Spacer()
+                Text(field.value)
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Text("bytes \(field.off)–\(field.off + field.length - 1) · \(field.length) B")
+                .font(.caption2).foregroundStyle(.tertiary)
+            if !field.children.isEmpty {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(field.children) { c in
+                        HStack {
+                            Text(c.name).font(.system(.caption2, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(c.value).font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .padding(.leading, 8)
+                .padding(.top, 2)
+            }
+            if !field.note.isEmpty {
+                Text(field.note).font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

@@ -25,6 +25,9 @@
 
 /* ble_app.c: notify one frame-detail JSON on the 6e5f0003 characteristic */
 extern void ble_frame_push(const char *json, uint16_t len);
+/* ble_app.c: notify-only push (fragments); returns the SD hvx result so we
+ * can stop when the HVN queue is full and resume next tick. 0 == success. */
+extern uint32_t ble_frame_notify(const uint8_t *data, uint16_t len);
 
 extern const app_definition_t helpers_app_listener[];
 
@@ -51,7 +54,7 @@ extern const app_definition_t helpers_app_listener[];
 static volatile int m_capture_fail;
 static volatile uint32_t m_fail_seq;
 static volatile uint16_t m_fail_len;
-static volatile uint8_t m_fail_data[FRAME_HEX_MAX];
+static volatile uint8_t m_fail_data[FRAME_FULL_MAX];
 static volatile uint8_t m_fail_ts[5];
 static volatile int m_fail_rsl, m_fail_fsl;
 
@@ -81,9 +84,9 @@ static void capture_grab(const dwt_cb_data_t *rxd)
     if (m_capture_fail && rxd->datalength > 0)
     {
         uint16_t n = rxd->datalength;
-        if (n > FRAME_HEX_MAX)
+        if (n > FRAME_FULL_MAX)
         {
-            n = FRAME_HEX_MAX;
+            n = FRAME_FULL_MAX;
         }
         dwt_readrxdata((uint8_t *)m_fail_data, n, 0);
         listener2_readrxtimestamp((uint8_t *)m_fail_ts);
@@ -410,6 +413,60 @@ void uwb_feed_control_poll(void)
  * DIAG3[0] = ring head/tail, DIAG3[1] = sfd count */
 #define FRAMEDIAG DIAG3
 
+/* Full-frame fragment streamer. The summary push carries only the first
+ * FRAME_HEX_MAX bytes (to fit one notification), so we ALSO stream the
+ * whole frame as FRAG_CHUNK-sized fragment notifications the phone
+ * reassembles by seq. A few go per 500 ms tick, self-paced by the HVN
+ * queue: stop on the first non-success (queue full / not connected) and
+ * resume next tick. A newer frame restarts the stream, and the phone drops
+ * any partial reassembly when the seq changes. */
+#define STREAM_PER_TICK 3
+/* The one full-frame buffer, shared by the summary encode and the streamer
+ * (frame_poll fills it from the RX ring or the CRC-fail capture, then both
+ * read it). One buffer, not several, keeps the app RAM under RAM_BASE. */
+static uint8_t m_stream_buf[FRAME_FULL_MAX];
+static uint16_t m_stream_len;
+static uint32_t m_stream_seq;
+static int m_stream_part;   /* next part to send */
+static int m_stream_parts;  /* total parts, 0 = idle */
+
+/* Begin streaming whatever is already in m_stream_buf (bytes copied in by
+ * the caller). Restarts at part 0 — a newer frame supersedes any in-flight
+ * one, and the phone drops the partial reassembly on the seq change. */
+static void stream_set(uint16_t len, uint32_t seq)
+{
+    if (len > FRAME_FULL_MAX)
+    {
+        len = FRAME_FULL_MAX;
+    }
+    m_stream_len = len;
+    m_stream_seq = seq;
+    m_stream_part = 0;
+    m_stream_parts = frame_frag_count(len);
+}
+
+static void stream_pump(char *json, uint16_t cap)
+{
+    for (int sent = 0;
+         m_stream_parts > 0 && m_stream_part < m_stream_parts &&
+         sent < STREAM_PER_TICK;
+         sent++)
+    {
+        int n = frame_frag_encode(m_stream_buf, m_stream_len, m_stream_seq,
+                                  m_stream_part, json, cap);
+        if (n <= 0)
+        {
+            m_stream_parts = 0; /* defensive: never loop forever */
+            break;
+        }
+        if (ble_frame_notify((const uint8_t *)json, (uint16_t)n) != 0)
+        {
+            break; /* HVN queue full or not connected — resume next tick */
+        }
+        m_stream_part++;
+    }
+}
+
 void uwb_feed_frame_poll(void)
 {
     listener_info_t *info = getListenerInfoPtr();
@@ -420,7 +477,6 @@ void uwb_feed_frame_poll(void)
 
     static uint16_t last_head;
     static uint32_t last_enc_seq;
-    uint8_t data[FRAME_HEX_MAX];
     uint8_t ts[5];
     uint16_t dlen;
     int16_t cfo;
@@ -442,8 +498,11 @@ void uwb_feed_frame_poll(void)
         rx_listener_pckt_t *p =
             &info->rxPcktBuf.buf[(head - 1) & (EVENT_BUF_L_SIZE - 1)];
         dlen = (uint16_t)p->rxDataLen;
-        memcpy(data, p->msg.data,
-               dlen < sizeof data ? dlen : sizeof data);
+        /* copy the WHOLE frame into the shared buffer while the ring entry
+         * is safe (inside the critical section); the summary reads its
+         * first bytes and the streamer sends the rest */
+        memcpy(m_stream_buf, p->msg.data,
+               dlen < FRAME_FULL_MAX ? dlen : FRAME_FULL_MAX);
         memcpy(ts, p->timeStamp, sizeof ts);
         cfo = p->clock_offset;
         rsl100 = p->rsl100;
@@ -462,9 +521,12 @@ void uwb_feed_frame_poll(void)
               (uint32_t)crcb + (uint32_t)stse + (uint32_t)to;
     taskEXIT_CRITICAL();
 
-    /* snapshot the latest CRC-failed capture, if enabled */
+    /* snapshot the latest CRC-failed capture, if enabled. Only the small
+     * metadata is grabbed here; the full bytes are copied out of
+     * m_fail_data in the have_fail branch below (only when we'll use them),
+     * so we don't clobber a fresh frame already staged in m_stream_buf. */
     static uint32_t last_fail_seq;
-    uint8_t fdata[FRAME_HEX_MAX], fts[5];
+    uint8_t fts[5];
     uint16_t flen = 0;
     int frsl = 0, ffsl = 0;
     uint32_t fseq = 0;
@@ -477,7 +539,6 @@ void uwb_feed_frame_poll(void)
         {
             have_fail = 1;
             flen = m_fail_len;
-            memcpy(fdata, (const void *)m_fail_data, sizeof fdata);
             memcpy(fts, (const void *)m_fail_ts, sizeof fts);
             frsl = m_fail_rsl;
             ffsl = m_fail_fsl;
@@ -491,24 +552,34 @@ void uwb_feed_frame_poll(void)
         /* a genuinely clean (CRC-good) frame — rare for encrypted traffic */
         int cfo_pphm =
             (int)((float)cfo * (CLOCK_OFFSET_PPM_TO_RATIO * 1e6 * 100));
-        int n = frame_encode(data, dlen, ts, cfo_pphm, rsl100, fsl100, seq,
-                             1, json, sizeof json);
+        /* fresh frame already sits in m_stream_buf (copied in the critical
+         * section above); summary reads its head, streamer sends the rest */
+        int n = frame_encode(m_stream_buf, dlen, ts, cfo_pphm, rsl100, fsl100,
+                             seq, 1, json, sizeof json);
         if (n > 0)
         {
             ble_frame_push(json, (uint16_t)n);
         }
+        stream_set(dlen, seq); /* stream the whole frame too */
     }
     else if (have_fail)
     {
         /* CRC-failed frame captured off the error path: real bytes (header
-         * decodes; STS body is ciphertext), flagged crc:0 */
+         * decodes; STS body is ciphertext), flagged crc:0. Copy the full
+         * frame out of the ISR capture buffer now (fresh didn't run, so
+         * m_stream_buf is free to reuse). */
         last_fail_seq = fseq;
-        int n = frame_encode(fdata, flen, fts, 0, frsl, ffsl, fseq, 0, json,
-                             sizeof json);
+        taskENTER_CRITICAL();
+        memcpy(m_stream_buf, (const void *)m_fail_data,
+               flen < FRAME_FULL_MAX ? flen : FRAME_FULL_MAX);
+        taskEXIT_CRITICAL();
+        int n = frame_encode(m_stream_buf, flen, fts, 0, frsl, ffsl, fseq, 0,
+                             json, sizeof json);
         if (n > 0)
         {
             ble_frame_push(json, (uint16_t)n);
         }
+        stream_set(flen, fseq); /* stream the whole frame too */
     }
     else if (enc_seq != last_enc_seq)
     {
@@ -523,6 +594,10 @@ void uwb_feed_frame_poll(void)
             ble_frame_push(json, (uint16_t)n);
         }
     }
+
+    /* push a few fragments of the staged full frame (started this tick or a
+     * previous one); reuses the json scratch buffer, self-paced by the queue */
+    stream_pump(json, sizeof json);
 }
 
 uint16_t uwb_ble_payload(char *buf, uint16_t cap)
