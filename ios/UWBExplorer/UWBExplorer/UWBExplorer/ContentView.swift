@@ -77,18 +77,32 @@ struct ContentView: View {
 
     private var statusText: String {
         if !ble.isConnected { return ble.connection }
+        if ble.isConnected && !ble.gotData { return "linking…" }
         switch ble.state.status {
         case "live":  return "live"
         case "scan":  return "scanning code \(ble.state.pcodeText)"
         case "error": return "board error"
-        default:      return "waiting for board"
+        default:      return "no data"
         }
     }
 
+    /// Connected over Bluetooth but the data pipe is dead — either iOS
+    /// handed us a stale cached service list (missing characteristics) or
+    /// no notifications are arriving. The cure is a full phone restart.
+    private var staleCache: Bool {
+        ble.isConnected && !ble.gotData &&
+            (ble.foundChars > 0 && ble.foundChars < 3)
+    }
+
     private var note: String {
-        if !ble.isConnected { return "Bring the phone near the UWB unit." }
+        if !ble.isConnected { return "Bring the phone near the UWB board (it just needs power)." }
+        if staleCache {
+            return "Connected, but iOS is using a stale Bluetooth map of the board (found \(ble.foundChars)/3 channels). Fully restart your iPhone to refresh it."
+        }
+        if !ble.gotData {
+            return "Connected — waiting for the first data from the board…"
+        }
         switch ble.state.status {
-        case "waiting": return "Plug the DWM3001CDK into the Pi (J20)…"
         case "scan": return "Sweeping preamble codes 9–12 for a transmitter — trigger an AirTag precision-find near the board."
         default: break
         }

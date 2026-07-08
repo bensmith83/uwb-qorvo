@@ -13,6 +13,15 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var state = UWBState.idle
     @Published var connection = "Starting…"
     @Published var isConnected = false
+    /// How many of our 3 characteristics the current connection found. If
+    /// it's < 3 after connecting, iOS handed us a stale cached service list
+    /// (the classic "added characteristics later" trap) and the fix is to
+    /// restart the phone.
+    @Published var foundChars = 0
+    /// True once a state notification has actually been received on this
+    /// connection — distinguishes "connected & working" from "connected but
+    /// the Bluetooth data pipe is stale."
+    @Published var gotData = false
     /// Recent per-notification hit counts, for the sparkline.
     @Published var history: [Int] = []
     /// Latest received UWB frame (nil until the board hears one).
@@ -128,6 +137,8 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ c: CBCentralManager, didConnect p: CBPeripheral) {
         connection = "Connected"
         isConnected = true
+        foundChars = 0
+        gotData = false
         p.discoverServices([Self.serviceUUID])
     }
 
@@ -149,12 +160,15 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
+        var n = 0
         for ch in s.characteristics ?? [] {
             switch ch.uuid {
             case Self.charUUID, Self.frameCharUUID:
+                n += 1
                 p.setNotifyValue(true, for: ch)
                 p.readValue(for: ch)
             case Self.ctrlCharUUID:
+                n += 1
                 ctrlChar = ch
                 // the board resets capture to off on each connect — restore
                 if captureFailed { p.writeValue(Data("F1".utf8), for: ch, type: .withResponse) }
@@ -162,6 +176,7 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
                 break
             }
         }
+        DispatchQueue.main.async { self.foundChars = n }
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
@@ -178,6 +193,7 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         guard let decoded = try? JSONDecoder().decode(UWBState.self, from: data) else { return }
         DispatchQueue.main.async {
+            self.gotData = true
             self.state = decoded
             self.history.append(decoded.hits ?? 0)
             if self.history.count > 90 {

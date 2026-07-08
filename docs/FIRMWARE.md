@@ -328,6 +328,19 @@ on reboot); auto-sweep is **opt-in** via the app toggle and flagged
 experimental. Still open: whether heavy AirTag *reception* on a live code
 (no restart) is SD-stable — the next field test answers it.
 
+### The definitive cache-buster: a fresh BLE address (no phone restart)
+Toggling Bluetooth does NOT reliably clear iOS's GATT cache, and enabling
+Service Changed actually shifted the attribute handles (the GATT service
+takes early handles), so a cached phone then had even the state char
+(0002) at the wrong handle → "connected, no data." Real fix:
+`sd_ble_gap_addr_set` to a fixed **static-random address** distinct from
+the FICR default. iOS keys its cache by device address, so a new address
+is a brand-new device to the phone → clean re-discovery of all
+characteristics, no restart needed. The app scans by service UUID so the
+address change is transparent. Bump `addr[0]` if a cache ever goes stale
+again. The app also now counts discovered chars (`foundChars`) and shows
+a "restart your iPhone / stale map" hint if it ever sees < 3.
+
 ### iOS GATT caching hid the new characteristics (frame 0003, control 0004)
 The real reason the iPhone saw bars but no frame history AND the
 channel/preamble buttons did nothing: **CoreBluetooth caches the GATT

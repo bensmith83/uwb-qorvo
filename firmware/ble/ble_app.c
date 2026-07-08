@@ -434,6 +434,23 @@ void ble_app_init(void)
 
     APP_ERROR_CHECK(nrf_ble_gatt_init(&m_gatt, NULL));
 
+    /* Give the board a fresh BLE address, distinct from the FICR default a
+     * client may have cached with the OLD (smaller) service list. iOS keys
+     * its sticky GATT cache by device address, so a new address = a new
+     * device to the phone = a clean re-discovery of all characteristics,
+     * with no need to restart the phone. Bump the low byte if a cache ever
+     * goes stale again. (Static-random: the two MSBits of addr[5] are 11.) */
+    ble_gap_addr_t addr;
+    memset(&addr, 0, sizeof addr);
+    addr.addr_type = BLE_GAP_ADDR_TYPE_RANDOM_STATIC;
+    addr.addr[0] = 0x02;
+    addr.addr[1] = 0x03;
+    addr.addr[2] = 0xB5;
+    addr.addr[3] = 0x24;
+    addr.addr[4] = 0x5F;
+    addr.addr[5] = 0xEE; /* 0b1110_1110 -> valid static-random */
+    APP_ERROR_CHECK(sd_ble_gap_addr_set(&addr));
+
     ble_gap_conn_sec_mode_t sec_mode;
     BLE_GAP_CONN_SEC_MODE_SET_OPEN(&sec_mode);
     APP_ERROR_CHECK(sd_ble_gap_device_name_set(
