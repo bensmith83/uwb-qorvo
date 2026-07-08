@@ -166,22 +166,80 @@ self-erase. Keep this harness for future firmware bring-up.
 `tools/flash.sh` + `openocd` over the J-Link (J9) — local, no network. Keep the
 CLI image around; swap back anytime for the Pi/Python path.
 
-## Next steps
-1. ~~Flash + verify the baseline~~ **DONE 2026-07-07**: GCC-built CLI boots,
-   console + listener + config save/load all verified on hardware. Board is
-   currently running this image (restore vendor: `tools/flash.sh cli`).
-2. Add a **SoftDevice (S113)** + nRF BLE stack (`nrf_sdh`, `ble_gatts`).
-   The flash map is already SoftDevice-shaped: MBR+S113 fit in 0x0–0x1CFFF
-   (S113 7.x ends < 0x1C000), fconfig page at 0x1E000, app at 0x1F000.
-   Work items: pick the S113 hex from the SDK's 16 bundled SoftDevices;
-   app vector table moves to the app base (SD forwards interrupts); add
-   `nrf_sdh` sources + `S113`/`SOFTDEVICE_PRESENT` defines; RAM base moves
-   up by the SD's RAM need (tune from `sd_ble_enable` return); FreeRTOS +
-   SD coexistence via the SDK's `nrf_sdh_freertos` helper.
-3. Add the **BLE GATT service** mirroring `uwb_explorer/ble.py`'s UUIDs +
-   `blecodec.py` wire format, fed from the on-chip UWB listener counters
-   (same LSTAT counters `tools/detect.py` polls → same Geiger model as
-   `uwb_explorer/webmodel.py`).
+## ★ DONE (2026-07-08): board-only BLE firmware WORKS end-to-end ★
+
+`firmware/build-ble.sh` → `tools/flash.sh ble` produces the goal firmware:
+**S113 SoftDevice + UWB LISTENER2 + BLE GATT + USB CLI console, all at once,
+built on the Pi.** The board advertises as **"UWB"** (service
+`6e5f0001-b5a3-f393-e0a9-e50e24dcca9e`), auto-starts the listener at boot,
+and notifies the `blecodec.py` compact JSON every 500 ms from the live LSTAT
+counters (`{"s":"live",...,"c":9,"k":9}`). Verified from the Pi with `bleak`
+(connect/read/subscribe, 500 ms cadence, all 8 contract keys, byte-format
+identical to Python); survives reboot; `SAVE` persists. The iOS app
+(`ios/`) and nRF Connect see it without changes. Board is currently running
+this image; vendor restore stays `tools/flash.sh cli` / `ni`.
+
+### Architecture
+- `firmware/ble/ble_app.c` — SD enable (pre-scheduler, hooked via
+  breadcrumb.c's `__wrap_osKernelStart` under `BLE_BUILD`), vs-UUID GATT
+  service + raw advertising, 500 ms notify task.
+- `firmware/ble/detector.c` — pure-C port of `webmodel.py` DetectorState +
+  `blecodec.py` encoder; host-compiled and **byte-for-byte oracle-tested
+  against the Python implementation** (`tests/test_c_detector.py`).
+- `firmware/ble/uwb_feed.c` — listener autostart (same path as the
+  `LISTENER2` command; respects a user-saved non-STOP default app), 1 Hz
+  counter folds (SFDD/PHE/CRCB/CRCG under `taskENTER_CRITICAL`, mirroring
+  the vendor's LSTAT), chan/pcode from `get_dwt_config()`.
+- `firmware/ble/sd_flash_wrap.c` — `--wrap=save_bssConfig`: SD-safe
+  DEFERRED config save (see gotchas).
+- `firmware/ble/app_config.h` — sdk_config overlay via `USE_APP_CONFIG`.
+- Memory map: app vectors @ **0x1C000** (S113 end), fconfig page @ 0x1E000
+  unchanged, code @ 0x1F000, app RAM @ 0x20002608 (SD actually needs
+  0x20002210 — ~1 KB reclaimable), MSP stack/newlib heap 4 KB each.
+
+### SoftDevice-coexistence gotchas (each cost a debug cycle)
+1. **NVIC sanitize before `sd_softdevice_enable`** — the vendor app inits
+   every peripheral before the SD exists, so enable returns 0x1001
+   (`NRF_ERROR_SDM_INCORRECT_INTERRUPT_CONFIGURATION`). Fix:
+   `nvic_sanitize_for_sd()` disables SD-owned peripheral IRQs and remaps
+   priorities 0/1/4/5 → 2/6 (ble_app.c).
+2. **The legacy-config trap.** sdk_config defines `RTC_ENABLED`/
+   `TIMER_ENABLED`, and `integration/nrfx/legacy/apply_old_config.h`
+   **overrides every `NRFX_*_ENABLED` with the legacy value** — overriding
+   only the NRFX keys in app_config.h silently does nothing. Override the
+   LEGACY instance keys (`RTC0/RTC2/TIMER0/TIMER1_ENABLED`). The vendor HAL
+   is pre-wired: RTC_ID→2, TIMERC_ID→1 ("SD using 0" comments) once the
+   right instances are enabled. Miss this and TIMERC lands on the SD's
+   TIMER0 → SD assert at listener start.
+3. **SPIM3 anomaly-198 workaround must be OFF.** The vendor config enables
+   the nRF52840 workaround, which writes the undocumented POWER register
+   `0x40000E00` around **every DW3110 SPI transfer** →
+   `NRF_FAULT_ID_APP_MEMACC` (fault id 0x1001, MWU peripheral violation) on
+   the first SPI after SD enable. This chip is an nRF52833 — the anomaly
+   doesn't apply. (Boot-time SPI works because the SD isn't enabled yet;
+   the crash waits for the listener start. Very confusing.)
+4. **Config save under the SD.** `f_save` wraps the save in
+   `CMD_ENTER_CRITICAL()`; direct NVMC corrupts SD radio timing and calling
+   `sd_flash_*`/`vTaskDelay` from that context asserts the SD (svc 255).
+   Fix: `--wrap=save_bssConfig` snapshots rconfig+CRC and returns; the BLE
+   notify task performs erase+write via `sd_flash_*` with SoC-event
+   completion (~1 s after the "ok").
+5. `NRF_SDH_DISPATCH_MODEL 2` (polling) — `nrf_sdh_freertos.c` owns
+   `SD_EVT_IRQHandler`; model 0 duplicates the symbol.
+6. SoftDevice headers must PRECEDE `drivers_nrf/nrf_soc_nosd` on the
+   include path (`gen_makefile --inc` prepends): the no-SD `nrf_error.h`
+   compiles to nothing under `SOFTDEVICE_PRESENT`.
+7. Fault triage decoder ring: fault id 0x0001 = SD assert, **0x1001 =
+   app invalid memory access** (MWU; NOT "SDM error 0x1001"), 0x4001 =
+   SDK error via `APP_ERROR_CHECK` (err code in `info->err_code`).
+   MWU REGION[0] on this setup = the SD's RAM (`0x20000000..0x2000220F`).
+
+### Remaining polish (optional)
+- AirTag live-hit test over BLE (hits>0 end-to-end) — logic is identical to
+  `tools/detect.py`'s proven LSTAT path, but not yet observed with real
+  UWB traffic on the BLE build.
+- Reclaim ~1 KB RAM (`--ram-base 0x20002210`); drop breadcrumbs for a
+  "release" image; iOS field test.
 
 ## Reproduce the build
 ```

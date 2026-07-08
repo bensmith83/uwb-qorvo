@@ -235,6 +235,20 @@ docs/FIRMWARE.md. **Board is currently running our GCC-built image**
 (`0.1.1-260707`); vendor restore: `tools/flash.sh cli` or `tools/flash.sh ni`.
 Next: SoftDevice S113 + BLE GATT service (see docs/FIRMWARE.md next steps).
 
+## ★ BOARD-ONLY BLE FIRMWARE COMPLETE (2026-07-08) ★
+
+**The endgame works.** `firmware/build-ble.sh` + `tools/flash.sh ble` puts
+S113 SoftDevice + UWB LISTENER2 + BLE GATT + USB CLI on the board at once,
+built entirely on the Pi. Advertises as "UWB" with the exact
+`uwb_explorer/ble.py` UUIDs and `blecodec.py` JSON (verified byte-for-byte
+via bleak from the Pi's hci0; C detector oracle-tested against
+webmodel.py — 91 tests green). Listener auto-starts; SAVE persists;
+survives reboot. iOS app + nRF Connect see it unchanged. Full story +
+five hard-won SoftDevice-coexistence gotchas: docs/FIRMWARE.md.
+Board is running this image (`ble-firmware` + S113); restore:
+`tools/flash.sh cli` or `ni`. Remaining: AirTag live-hit BLE test,
+iOS field test.
+
 ## Current state (update as you go!)
 
 - [x] Board connected: J-Link VID 1366 → /dev/ttyACM0; solid red LED
