@@ -223,10 +223,27 @@ struct ContentView: View {
                 .labelsHidden()
                 .disabled(!ble.isConnected)
             }
+            Text("code \(s.pcodeText) = Apple's UWB. Tap ± to try 9/11/12.")
+                .font(.caption2).foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 6) {
+                stepBtn("–") { ble.setPreamble(max(9, (s.pcode ?? 10) - 1)) }
+                stepBtn("+") { ble.setPreamble(min(12, (s.pcode ?? 10) + 1)) }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+    }
+
+    private func stepBtn(_ label: String, _ action: @escaping () -> Void) -> some View {
+        Text(label)
+            .font(.headline).monospacedDigit()
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 7).fill(Color.gray.opacity(0.15)))
+            .contentShape(Rectangle())
+            .onTapGesture { if ble.isConnected { action() } }
     }
 
     private func stat(_ title: String, _ value: String) -> some View {

@@ -50,7 +50,7 @@ import re, sys
 out = sys.argv[1]
 ld = open(f"{out}/merged.ld").read()
 ld = re.sub(r"(RAM \(rwx\) : ORIGIN = 0x[0-9a-f]+, LENGTH = )(0x[0-9a-f]+)",
-            lambda m: m.group(1) + hex(int(m.group(2), 16) - 0x60), ld, count=1)
+            lambda m: m.group(1) + hex(int(m.group(2), 16) - 0x80), ld, count=1)
 open(f"{out}/merged.ld", "w").write(ld)
 p = f"{out}/Makefile"
 s = open(p).read()

@@ -304,6 +304,30 @@ but `listener_task_notify`/`copy_tx_msg`==0 and the RX ring never
 advanced — partial energy, zero completed frames. Yesterday's byte
 capture was on **code 10**.
 
+### ★ Listener restart under the SoftDevice asserts it (id=1) — default is now no-restart ★
+On-device forensics (window 0x2001FF80/0x2001FFA0/0x2001FFE0, all persist
+across watchdog resets): during an AirTag find with auto-sweep on, boot
+count hit **10** with **watchdog** resets and a captured **SD assert**
+(fault id 1, SD PC 0x12c76). Reproduced with NO AirTag present — an idle
+auto-sweep asserted after just **2 listener restarts**. So the trigger is
+the **listener restart** (`EventManagerRegisterApp` → defaultTask tears
+down and re-runs `listener_process_init`, which does a full
+`dwt_initialise()` + RTC repriority under the live SD), not heavy
+reception. It's probabilistic: single manual switches often survive, but
+the sweep's repeated restarts assert reliably. Ruled out first:
+`configMAX_SYSCALL`=5 does not mask the SD (levels 0/1/4); `decamutexon`
+doesn't `__disable_irq`; RTC2 repriority is to 5 (legal).
+
+**Fix / default:** boot straight onto **preamble code 10** (Apple's
+strongest per the capture) by setting `txCode/rxCode` in
+`uwb_feed_autostart` *before the first listener start* — no restart — and
+default to **manual** mode (`m_auto=0`). Verified: 90 s idle on code 10,
+zero faults, zero resets. Channel/preamble changes and auto-sweep still
+exist (they restart, so they can still trip the assert → board recovers
+on reboot); auto-sweep is **opt-in** via the app toggle and flagged
+experimental. Still open: whether heavy AirTag *reception* on a live code
+(no restart) is SD-stable — the next field test answers it.
+
 ### Auto-sweep + channel/preamble control (characteristic 6e5f0004)
 `uwb_feed_control_poll()` (notify-task context — radio reconfigure +
 listener restart must never run in SD-event context) implements a

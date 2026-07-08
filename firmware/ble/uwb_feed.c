@@ -33,14 +33,32 @@ static int m_live;
 static unsigned m_tick;
 static int m_scanning; /* 1 while auto-sweep is hunting a preamble code */
 
+/*
+ * Diagnostics window at 0x2001FF80 (clear of the boot/fault window at
+ * 0x2001FFE0; RAM shrunk to 0x1FF80, zeroed by tools/flash.sh). Persists
+ * across watchdog resets:
+ *   [0] 0xF00D0000 | head<<8 | tail   (frame ring)
+ *   [1] sfd_detect count last seen
+ *   [2] 0xE5E5.... enc/hvx push errors (from ble_frame_push)
+ *   [3] listener_restart call count
+ *   [4] 0xB2 << 24 | in_restart<<16 | current preamble code<<8 | mode
+ *       (in_restart=1 means a fault hit DURING a listener restart)
+ *   [5] rx_activity at the last restart
+ *   [6..7] free
+ */
+#define DIAG3 ((volatile uint32_t *)0x2001FF80u)
+
 /* Re-register the LISTENER app so the DW3110 picks up get_dwt_config()
  * changes (channel / preamble code). Must run in task context, never in
  * an SD-event callback. Shared by autostart, manual set, and auto-sweep. */
 static void listener_restart(void)
 {
+    DIAG3[3]++;
+    DIAG3[4] |= 0x00010000u; /* in_restart */
     listener_set_mode(2);
     app_definition_t *app_ptr = (app_definition_t *)&helpers_app_listener[0];
     EventManagerRegisterApp((void *)&app_ptr);
+    DIAG3[4] &= ~0x00010000u; /* restart returned cleanly */
 }
 
 /* Start LISTENER2 exactly like the CLI's "LISTENER2" command (f_listen2),
@@ -56,6 +74,18 @@ void uwb_feed_autostart(void)
         strcmp(def->app_name, "STOP") != 0)
     {
         return;
+    }
+    /* Boot straight onto Apple's UWB preamble code (10 was the strongest
+     * lock in the code-sweep capture; default is 9, on which the AirTag is
+     * silent). Setting it BEFORE the first listener start means no restart
+     * is needed — and restarts are what assert the SoftDevice, so we avoid
+     * them by default. Auto-sweep (which must restart to hop codes) is
+     * opt-in via the app toggle. */
+    dwt_config_t *cfg = get_dwt_config();
+    if (cfg != NULL)
+    {
+        cfg->txCode = 10;
+        cfg->rxCode = 10;
     }
     listener_restart();
 }
@@ -90,15 +120,19 @@ void uwb_feed_autostart(void)
  */
 static const uint8_t SWEEP_CODES[] = {9, 10, 11, 12};
 #define SWEEP_N (sizeof SWEEP_CODES / sizeof SWEEP_CODES[0])
-#define DWELL_TICKS 5       /* ~2.5 s per code at the 500 ms tick */
-#define LOCK_THRESHOLD 3    /* receptions in a dwell that mean "found it" */
-#define UNLOCK_SILENCE 12   /* ~6 s of nothing -> resume sweeping */
+#define DWELL_TICKS 6       /* ~3 s per code at the 500 ms tick */
+#define LOCK_THRESHOLD 1    /* ANY reception on a code -> lock (don't
+                             * restart while traffic is present) */
+#define UNLOCK_SILENCE 40   /* ~20 s of nothing -> resume sweeping (ride
+                             * through the gaps between AirTag bursts) */
 
 static volatile int m_pending_chan;  /* 5 or 9 */
 static volatile int m_pending_code;  /* 9..12, forces manual */
 static volatile int m_pending_auto;  /* 1 = auto on, -1 = manual/off */
 
-static int m_auto = 1;               /* default: sweep like a sniffer */
+static int m_auto = 0;               /* default: MANUAL on code 10 (stable,
+                                      * no restarts); auto-sweep is opt-in
+                                      * because hopping codes asserts the SD */
 static int m_sweep_idx;
 static unsigned m_dwell;
 static uint32_t m_activity_mark;
@@ -197,6 +231,8 @@ void uwb_feed_control_poll(void)
         return;
     }
     uint32_t act = rx_activity(info);
+    DIAG3[4] = 0xB2000000u | (DIAG3[4] & 0x00010000u) |
+               ((cfg->txCode & 0xFFu) << 8) | (m_scanning ? 1u : 0u);
 
     if (!m_scanning)
     {
@@ -214,22 +250,36 @@ void uwb_feed_control_poll(void)
         return;
     }
 
-    /* scanning: dwell on the current code, lock if it hears enough */
+    /* scanning: dwell on the current code, lock the instant it hears
+     * ANYTHING — critically, we must NOT restart the listener while
+     * traffic is arriving (that is what asserts the SoftDevice), so lock
+     * beats switching whenever activity is present. */
     if (m_dwell == 0)
     {
-        m_activity_mark = act; /* baseline for this code */
+        m_activity_mark = act; /* baseline for this code (post-restart) */
     }
-    if (act - m_activity_mark >= LOCK_THRESHOLD)
+    else if (act - m_activity_mark >= LOCK_THRESHOLD)
     {
-        m_scanning = 0; /* found a talker on this code */
+        m_scanning = 0; /* found a talker on this code — stop restarting */
         m_activity_mark = act;
         m_dwell = 0;
         return;
     }
     if (++m_dwell >= DWELL_TICKS)
     {
+        /* dwell expired with the code silent — safe to hop. Re-check
+         * activity once more so we never restart on top of a frame that
+         * just landed. */
+        if (rx_activity(info) != m_activity_mark)
+        {
+            m_scanning = 0; /* late arrival — lock instead of hopping */
+            m_activity_mark = rx_activity(info);
+            m_dwell = 0;
+            return;
+        }
         m_dwell = 0;
         m_sweep_idx = (m_sweep_idx + 1) % SWEEP_N;
+        DIAG3[5] = act;
         if (cfg->txCode != SWEEP_CODES[m_sweep_idx])
         {
             set_code(cfg, SWEEP_CODES[m_sweep_idx]);
@@ -237,13 +287,9 @@ void uwb_feed_control_poll(void)
     }
 }
 
-/* temporary frame-path diagnostics, readable via SWD dump_image:
- * 0x2001FFF4 = 0xF00D0000 | head<<8 | tail
- * 0x2001FFF8 = sfd_detect count seen by the poll
- * 0x2001FFFC = 0xE5E50000 | value_set err<<8 | hvx err (from ble_frame_push)
- * (these are the boot window's fault CFSR/HFSR/BFAR slots — unused unless
- * a fault fires, in which case the fault wins and that's fine) */
-#define FRAMEDIAG ((volatile uint32_t *)0x2001FFF4u)
+/* frame-path diagnostics live in the DIAG3 window (see top of file):
+ * DIAG3[0] = ring head/tail, DIAG3[1] = sfd count */
+#define FRAMEDIAG DIAG3
 
 void uwb_feed_frame_poll(void)
 {
@@ -290,7 +336,11 @@ void uwb_feed_frame_poll(void)
     stse = info->event_counts.STSE;
     to = info->event_counts.SFDTO + info->event_counts.PTO +
          info->event_counts.RTO;
-    enc_seq = (uint32_t)crcb + (uint32_t)stse;
+    /* fire the encrypted-energy marker on ANY failed-reception activity,
+     * not just CRC/STS — AirTag energy often shows first as header
+     * errors or timeouts, and we want the card to light up regardless */
+    enc_seq = (uint32_t)info->event_counts_sfd_detect + (uint32_t)phe +
+              (uint32_t)crcb + (uint32_t)stse + (uint32_t)to;
     taskEXIT_CRITICAL();
 
     static char json[160];

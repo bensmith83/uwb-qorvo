@@ -273,7 +273,8 @@ void ble_frame_push(const char *json, uint16_t len)
         hvx_err = sd_ble_gatts_hvx(conn, &hvx);
     }
     /* frame-path diagnostics (see uwb_feed.c FRAMEDIAG) */
-    *(volatile uint32_t *)0x2001FFFCu =
+    /* DIAG3[2] at 0x2001FF88 (clear of the fault window at 0x2001FFE0) */
+    *(volatile uint32_t *)0x2001FF88u =
         0xE5E50000u | ((vs_err & 0xFFu) << 8) | (hvx_err & 0xFFu);
 }
 
