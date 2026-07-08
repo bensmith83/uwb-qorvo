@@ -46,3 +46,52 @@ extension UWBState {
     var channelText: String { channel.map(String.init) ?? "–" }
     var pcodeText: String { pcode.map(String.init) ?? "–" }
 }
+
+/// One received UWB frame, from the firmware's frame characteristic
+/// (6e5f0003, firmware/ble/framefmt.c). The characteristic's initial
+/// value is "{}", so every field is optional; `seq` nil means
+/// "no frame heard yet".
+struct UWBFrame: Decodable {
+    var seq: Int?
+    var length: Int?
+    var bytesHex: String?
+    var rsl: Double?     // received signal level, dBm
+    var fsl: Double?     // first-path signal level, dBm
+    var cfoPPM: Double?  // carrier frequency offset, ppm
+    var timestamp: String?
+
+    enum CodingKeys: String, CodingKey {
+        case seq = "i", length = "n", bytesHex = "b"
+        case rsl, fsl, cfoPPM = "o", timestamp = "ts"
+    }
+}
+
+extension UWBFrame {
+    /// First-path vs total power gap — the classic DW3xxx line-of-sight
+    /// heuristic (APS006): small gap = direct path dominates.
+    var pathText: String {
+        guard let r = rsl, let f = fsl else { return "–" }
+        let gap = r - f
+        if gap < 6 { return "LIKELY LOS" }
+        if gap > 10 { return "LIKELY NLOS" }
+        return "MIXED PATH"
+    }
+
+    var rslText: String { rsl.map { String(format: "%.1f dBm", $0) } ?? "–" }
+    var fslText: String { fsl.map { String(format: "%.1f dBm", $0) } ?? "–" }
+    var cfoText: String { cfoPPM.map { String(format: "%+.2f ppm", $0) } ?? "–" }
+
+    /// "41 88 0C AD DE …" — spaced hex for display.
+    var bytesSpaced: String {
+        guard let b = bytesHex, !b.isEmpty else { return "" }
+        var out = ""
+        var i = b.startIndex
+        while i < b.endIndex {
+            let j = b.index(i, offsetBy: 2, limitedBy: b.endIndex) ?? b.endIndex
+            if !out.isEmpty { out += " " }
+            out += b[i..<j]
+            i = j
+        }
+        return out
+    }
+}

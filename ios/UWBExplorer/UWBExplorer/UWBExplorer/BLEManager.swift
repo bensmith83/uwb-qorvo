@@ -4,15 +4,18 @@ import Combine
 /// Connects to the Pi's UWB BLE peripheral, subscribes to state notifications,
 /// and republishes them for SwiftUI. Auto-reconnects on drop.
 final class BLEManager: NSObject, ObservableObject {
-    // Must match uwb_explorer/ble.py
-    static let serviceUUID = CBUUID(string: "6e5f0001-b5a3-f393-e0a9-e50e24dcca9e")
-    static let charUUID    = CBUUID(string: "6e5f0002-b5a3-f393-e0a9-e50e24dcca9e")
+    // Must match uwb_explorer/ble.py + firmware/ble/ble_app.c
+    static let serviceUUID   = CBUUID(string: "6e5f0001-b5a3-f393-e0a9-e50e24dcca9e")
+    static let charUUID      = CBUUID(string: "6e5f0002-b5a3-f393-e0a9-e50e24dcca9e")
+    static let frameCharUUID = CBUUID(string: "6e5f0003-b5a3-f393-e0a9-e50e24dcca9e")
 
     @Published var state = UWBState.idle
     @Published var connection = "Starting…"
     @Published var isConnected = false
     /// Recent per-notification hit counts, for the sparkline.
     @Published var history: [Int] = []
+    /// Latest received UWB frame (nil until the board hears one).
+    @Published var lastFrame: UWBFrame?
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
@@ -67,20 +70,28 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         for s in p.services ?? [] where s.uuid == Self.serviceUUID {
-            p.discoverCharacteristics([Self.charUUID], for: s)
+            p.discoverCharacteristics([Self.charUUID, Self.frameCharUUID], for: s)
         }
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
-        for ch in s.characteristics ?? [] where ch.uuid == Self.charUUID {
+        for ch in s.characteristics ?? []
+        where ch.uuid == Self.charUUID || ch.uuid == Self.frameCharUUID {
             p.setNotifyValue(true, for: ch)
             p.readValue(for: ch)
         }
     }
 
     func peripheral(_ p: CBPeripheral, didUpdateValueFor ch: CBCharacteristic, error: Error?) {
-        guard let data = ch.value,
-              let decoded = try? JSONDecoder().decode(UWBState.self, from: data) else { return }
+        guard let data = ch.value else { return }
+        if ch.uuid == Self.frameCharUUID {
+            // Initial value is "{}" — all-nil decode means no frame yet.
+            guard let frame = try? JSONDecoder().decode(UWBFrame.self, from: data),
+                  frame.seq != nil else { return }
+            DispatchQueue.main.async { self.lastFrame = frame }
+            return
+        }
+        guard let decoded = try? JSONDecoder().decode(UWBState.self, from: data) else { return }
         DispatchQueue.main.async {
             self.state = decoded
             self.history.append(decoded.hits ?? 0)

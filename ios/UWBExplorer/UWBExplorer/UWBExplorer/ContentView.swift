@@ -43,6 +43,10 @@ struct ContentView: View {
                 stat("Preamble", s.pcodeText)
             }
 
+            if let f = ble.lastFrame {
+                frameCard(f, tint: s.levelColor)
+            }
+
             Text(note)
                 .font(.footnote)
                 .foregroundStyle((s.decoded ?? 0) > 0 ? s.levelColor : .secondary)
@@ -87,6 +91,44 @@ struct ContentView: View {
         if (ble.state.decoded ?? 0) > 0 { return "\(ble.state.decoded!) frame(s) fully decoded ✓" }
         if (ble.state.hits ?? 0) > 0 { return "UWB energy detected — frames hitting the antenna." }
         return "Point it at a car, a phone precision-finding, or an AirTag."
+    }
+
+    /// Details of the most recent UWB frame the board heard
+    /// (frame characteristic 6e5f0003).
+    private func frameCard(_ f: UWBFrame, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("LAST FRAME #\(f.seq ?? 0)")
+                    .font(.caption2).tracking(1).foregroundStyle(.secondary)
+                Spacer()
+                Text(f.pathText)
+                    .font(.caption2).bold().tracking(1)
+                    .foregroundStyle(tint)
+            }
+            if !f.bytesSpaced.isEmpty {
+                Text(f.bytesSpaced + ((f.length ?? 0) > 16 ? " …" : ""))
+                    .font(.system(.footnote, design: .monospaced))
+                    .lineLimit(2)
+                    .foregroundStyle(.primary)
+            }
+            HStack(spacing: 12) {
+                frameStat("RSL", f.rslText)
+                frameStat("First path", f.fslText)
+                frameStat("CFO", f.cfoText)
+                frameStat("Len", f.length.map { "\($0) B" } ?? "–")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+        .animation(.easeInOut(duration: 0.2), value: f.seq)
+    }
+
+    private func frameStat(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title.uppercased()).font(.caption2).tracking(1).foregroundStyle(.secondary)
+            Text(value).font(.footnote).bold().monospacedDigit()
+        }
     }
 
     private func stat(_ title: String, _ value: String) -> some View {
