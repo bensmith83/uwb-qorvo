@@ -8,6 +8,7 @@ final class BLEManager: NSObject, ObservableObject {
     static let serviceUUID   = CBUUID(string: "6e5f0001-b5a3-f393-e0a9-e50e24dcca9e")
     static let charUUID      = CBUUID(string: "6e5f0002-b5a3-f393-e0a9-e50e24dcca9e")
     static let frameCharUUID = CBUUID(string: "6e5f0003-b5a3-f393-e0a9-e50e24dcca9e")
+    static let ctrlCharUUID  = CBUUID(string: "6e5f0004-b5a3-f393-e0a9-e50e24dcca9e")
 
     @Published var state = UWBState.idle
     @Published var connection = "Starting…"
@@ -19,6 +20,15 @@ final class BLEManager: NSObject, ObservableObject {
 
     private var central: CBCentralManager!
     private var peripheral: CBPeripheral?
+    private var ctrlChar: CBCharacteristic?
+
+    /// Retune the board's UWB listener (channel 5 or 9). The state JSON's
+    /// channel field confirms the switch a tick later.
+    func setChannel(_ ch: Int) {
+        guard ch == 5 || ch == 9,
+              let p = peripheral, let ctrl = ctrlChar else { return }
+        p.writeValue(Data(String(ch).utf8), for: ctrl, type: .withResponse)
+    }
 
     override init() {
         super.init()
@@ -70,15 +80,22 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
 
     func peripheral(_ p: CBPeripheral, didDiscoverServices error: Error?) {
         for s in p.services ?? [] where s.uuid == Self.serviceUUID {
-            p.discoverCharacteristics([Self.charUUID, Self.frameCharUUID], for: s)
+            p.discoverCharacteristics(
+                [Self.charUUID, Self.frameCharUUID, Self.ctrlCharUUID], for: s)
         }
     }
 
     func peripheral(_ p: CBPeripheral, didDiscoverCharacteristicsFor s: CBService, error: Error?) {
-        for ch in s.characteristics ?? []
-        where ch.uuid == Self.charUUID || ch.uuid == Self.frameCharUUID {
-            p.setNotifyValue(true, for: ch)
-            p.readValue(for: ch)
+        for ch in s.characteristics ?? [] {
+            switch ch.uuid {
+            case Self.charUUID, Self.frameCharUUID:
+                p.setNotifyValue(true, for: ch)
+                p.readValue(for: ch)
+            case Self.ctrlCharUUID:
+                ctrlChar = ch
+            default:
+                break
+            }
         }
     }
 

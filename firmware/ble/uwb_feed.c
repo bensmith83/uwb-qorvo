@@ -21,6 +21,7 @@
 #include "driver_app_config.h"
 #include "framefmt.h"
 #include "listener2.h"
+#include "translate.h"
 
 /* ble_app.c: notify one frame-detail JSON on the 6e5f0003 characteristic */
 extern void ble_frame_push(const char *json, uint16_t len);
@@ -62,6 +63,42 @@ void uwb_feed_autostart(void)
  * reception. Called from the 500 ms notify tick; pushes only when a new
  * frame arrived since the last tick (the USB path still streams every
  * frame). Copy under taskENTER_CRITICAL like the vendor's LSTAT does. */
+/* Channel switch (control characteristic 6e5f0004): the BLE observer
+ * just records the request; the notify task applies it — changing the
+ * config and restarting the listener must not run in SD-event context.
+ * Preamble code 9 (PRF64) is valid on both channel 5 and 9, so only the
+ * channel changes. */
+static volatile int m_pending_chan;
+
+void uwb_feed_request_channel(int ch)
+{
+    if (ch == 5 || ch == 9)
+    {
+        m_pending_chan = ch;
+    }
+}
+
+void uwb_feed_channel_poll(void)
+{
+    int ch = m_pending_chan;
+    if (ch == 0)
+    {
+        return;
+    }
+    m_pending_chan = 0;
+    dwt_config_t *cfg = get_dwt_config();
+    if (cfg == NULL || deca_to_chan(cfg->chan) == ch)
+    {
+        return;
+    }
+    cfg->chan = chan_to_deca(ch);
+    /* restart the listener exactly like autostart: defaultTask
+     * terminates the running app and starts this one on the new channel */
+    listener_set_mode(2);
+    app_definition_t *app_ptr = (app_definition_t *)&helpers_app_listener[0];
+    EventManagerRegisterApp((void *)&app_ptr);
+}
+
 /* temporary frame-path diagnostics, readable via SWD dump_image:
  * 0x2001FFF4 = 0xF00D0000 | head<<8 | tail
  * 0x2001FFF8 = sfd_detect count seen by the poll

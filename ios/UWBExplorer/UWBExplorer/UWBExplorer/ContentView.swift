@@ -39,7 +39,13 @@ struct ContentView: View {
                 stat("Peak / poll", "\(s.peak ?? 0)")
             }
             HStack(spacing: 10) {
-                stat("Channel", s.channelText)
+                Button {
+                    ble.setChannel(s.channel == 9 ? 5 : 9)
+                } label: {
+                    stat("Channel (tap)", s.channelText)
+                }
+                .buttonStyle(.plain)
+                .disabled(!ble.isConnected)
                 stat("Preamble", s.pcodeText)
             }
 

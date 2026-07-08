@@ -40,14 +40,18 @@ static ble_uuid128_t const m_base_uuid = {
 #define UUID_SERVICE 0x0001
 #define UUID_CHAR 0x0002
 #define UUID_FRAME_CHAR 0x0003 /* per-frame detail JSON (framefmt.c) */
+#define UUID_CTRL_CHAR 0x0004  /* write ASCII '5'/'9' to switch channel */
 
 /* provided by uwb_feed.c: writes the current compact-JSON state */
 extern uint16_t uwb_ble_payload(char *buf, uint16_t cap);
 extern void uwb_feed_autostart(void);
 extern void uwb_feed_flash_poll(void); /* deferred SD-safe config save */
 extern void uwb_feed_frame_poll(void); /* newest-frame push (6e5f0003) */
+extern void uwb_feed_request_channel(int ch);
+extern void uwb_feed_channel_poll(void);
 /* breadcrumb.c: stores a diagnostic word readable over SWD */
 extern void bread_note(uint32_t v);
+extern void diag2_count(int idx); /* hang-forensics counters */
 
 NRF_BLE_GATT_DEF(m_gatt);
 
@@ -80,6 +84,7 @@ static uint8_t m_uuid_type;
 static uint16_t m_service_handle;
 static ble_gatts_char_handles_t m_char_handles;
 static ble_gatts_char_handles_t m_frame_handles;
+static ble_gatts_char_handles_t m_ctrl_handles;
 static volatile uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;
 
 static uint8_t m_adv_handle = BLE_GAP_ADV_SET_HANDLE_NOT_SET;
@@ -135,6 +140,18 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
         BLELOG[7] = (BLELOG[7] & ~0xFF00u) | 1u | ((err & 0xFFu) << 8);
         break;
     }
+    case BLE_GATTS_EVT_WRITE:
+    {
+        ble_gatts_evt_write_t const *w =
+            &p_ble_evt->evt.gatts_evt.params.write;
+        if (w->handle == m_ctrl_handles.value_handle && w->len >= 1)
+        {
+            uint8_t b = w->data[0];
+            /* accept ASCII '5'/'9' or raw 5/9 */
+            uwb_feed_request_channel(b == '5' ? 5 : b == '9' ? 9 : b);
+        }
+        break;
+    }
     case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
     {
         /* open characteristics, no pairing/bonding */
@@ -182,6 +199,23 @@ static void services_init(void)
     p.init_len = 2;
     p.p_init_value = (uint8_t *)"{}";
     APP_ERROR_CHECK(characteristic_add(m_service_handle, &p, &m_frame_handles));
+
+    /* control: write ASCII '5' or '9' to retune the listener channel
+     * (state JSON's "c" confirms the switch) */
+    ble_add_char_params_t c;
+    memset(&c, 0, sizeof c);
+    c.uuid = UUID_CTRL_CHAR;
+    c.uuid_type = m_uuid_type;
+    c.max_len = 4;
+    c.init_len = 1;
+    c.p_init_value = (uint8_t *)"9";
+    c.is_var_len = true;
+    c.char_props.read = 1;
+    c.char_props.write = 1;
+    c.char_props.write_wo_resp = 1;
+    c.read_access = SEC_OPEN;
+    c.write_access = SEC_OPEN;
+    APP_ERROR_CHECK(characteristic_add(m_service_handle, &c, &m_ctrl_handles));
 }
 
 /* Push one frame-detail JSON (uwb_feed.c's listener wrap). Runs in the
@@ -251,7 +285,9 @@ static void notify_task(void *arg)
     for (;;)
     {
         vTaskDelay(pdMS_TO_TICKS(NOTIFY_PERIOD_MS));
+        diag2_count(4); /* notify-task heartbeat */
         uwb_feed_flash_poll();
+        uwb_feed_channel_poll();
         uwb_feed_frame_poll();
         uint16_t len = uwb_ble_payload(buf, sizeof buf);
         uint16_t conn = m_conn_handle;

@@ -33,7 +33,7 @@ case "${1:-}" in
     APP=.fwbuild/build-ble/ble-firmware.hex
     [[ -s $SD && -s $APP ]] || { echo "Missing $SD or $APP (run firmware/build-ble.sh)"; exit 1; }
     [[ -s $BACKUP ]] || { echo "Refusing to flash before factory backup exists."; exit 1; }
-    ocd "nrf5 mass_erase; program $SD; program $APP; reset halt; mww 0x2001FFC0 0 16; resume"
+    ocd "nrf5 mass_erase; program $SD; program $APP; reset halt; mww 0x2001FFA0 0 24; resume"
     echo "Flashed S113 + ble-firmware and reset."
     ;;
   *.hex)

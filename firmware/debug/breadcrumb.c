@@ -89,6 +89,68 @@ __attribute__((constructor)) static void bread_ctor(void)
     mark(0xC0DE0001u);
 }
 
+#ifdef BLE_BUILD
+/*
+ * Hang forensics (8 words at 0x2001FFA0, zeroed only by tools/flash.sh —
+ * RAM survives watchdog resets, so pre-crash values persist post-mortem):
+ *   [0] boot counter
+ *   [1] RESETREAS of the LAST reset (captured then cleared each boot;
+ *       bit1 = watchdog, bit2 = soft reset, bit3 = CPU lockup)
+ *   [2] dwt_isr entries        [3] dwt_isr exits (2 != 3 -> hung in ISR)
+ *   [4] BLE notify-task ticks  [5] listener_task_notify calls
+ *   [6] defaultTask loops (watchdog feeder alive)
+ *   [7] copy_tx_msg calls (frames reported to USB)
+ */
+#define DIAG2 ((volatile uint32_t *)0x2001FFA0u)
+
+__attribute__((constructor)) static void diag2_boot(void)
+{
+    DIAG2[0]++;
+    volatile uint32_t *resetreas = (volatile uint32_t *)0x40000400u;
+    DIAG2[1] = *resetreas;
+    *resetreas = 0xFFFFFFFFu; /* write-1-to-clear: next boot shows only
+                                 its own cause */
+}
+
+void diag2_count(int idx)
+{
+    DIAG2[idx]++;
+}
+
+extern void __real_dwt_isr(void);
+void __wrap_dwt_isr(void)
+{
+    DIAG2[2]++;
+    __real_dwt_isr();
+    DIAG2[3]++;
+}
+
+extern void __real_listener_task_notify(void);
+void __wrap_listener_task_notify(void)
+{
+    DIAG2[5]++;
+    __real_listener_task_notify();
+}
+
+/* one loop turn of defaultTask == one watchdog feed */
+typedef struct app_definition_s app_definition_t;
+extern int __real_EventManagerWaitAppRegistration(const app_definition_t *p,
+                                                  uint32_t timeout);
+int __wrap_EventManagerWaitAppRegistration(const app_definition_t *p,
+                                           uint32_t timeout)
+{
+    DIAG2[6]++;
+    return __real_EventManagerWaitAppRegistration(p, timeout);
+}
+
+extern int __real_copy_tx_msg(uint8_t *str, int len);
+int __wrap_copy_tx_msg(uint8_t *str, int len)
+{
+    DIAG2[7]++;
+    return __real_copy_tx_msg(str, len);
+}
+#endif /* BLE_BUILD */
+
 /* --- capture-and-spin fault handlers ----------------------------------- */
 
 void bread_hardfault_c(uint32_t *frame)
