@@ -18,6 +18,34 @@ import threading
 
 from .webmodel import DetectorState
 from .web import board_loop, DashboardServer
+from .experiments.control import Dispatcher, EXPERIMENTS
+
+
+class _PlaceholderController:
+    """Provisional stand-in until the real per-experiment controllers land.
+
+    Accepts the start/stop/status downlink so the web hub is fully wired now,
+    but does nothing on the board yet. Real controllers arrive in beads
+    .5 (scanner) / .8 (transponder) / .11 (beacon) / .16 (fuzzer); the
+    half-duplex pause-the-board-loop handoff is refined there too.
+    """
+
+    def __init__(self, exp: str):
+        self._exp = exp
+
+    def start(self, args):
+        return {"ok": True, "exp": self._exp, "note": "controller not yet implemented"}
+
+    def stop(self, args):
+        return {"ok": True, "exp": self._exp, "note": "controller not yet implemented"}
+
+    def status(self, args):
+        return {"exp": self._exp, "phase": "unimplemented"}
+
+
+def _provisional_dispatcher() -> Dispatcher:
+    """A dispatcher with a placeholder controller per known experiment letter."""
+    return Dispatcher({letter: _PlaceholderController(letter) for letter in EXPERIMENTS})
 
 
 def main(argv=None) -> int:
@@ -39,7 +67,8 @@ def main(argv=None) -> int:
                      kwargs={"sweep": args.sweep}, daemon=True).start()
 
     if not args.no_web:
-        srv = DashboardServer(state.snapshot, host=args.host, port=args.port)
+        srv = DashboardServer(state.snapshot, host=args.host, port=args.port,
+                              dispatcher=_provisional_dispatcher())
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         print(f"web dashboard on http://{args.host}:{args.port}", file=sys.stderr)
 

@@ -18,6 +18,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .experiments import control
 from .webmodel import DetectorState
 
 
@@ -35,8 +36,11 @@ class DashboardServer:
     """Serves the page and the state JSON. `snapshot` is a zero-arg callable
     returning the current JSON-able state dict."""
 
-    def __init__(self, snapshot, host: str = "0.0.0.0", port: int = 8080):
+    def __init__(self, snapshot, host: str = "0.0.0.0", port: int = 8080,
+                 dispatcher=None):
         self._snapshot = snapshot
+        self._dispatcher = dispatcher   # control.Dispatcher (the experiment downlink) or None
+        self._running = None            # letter of the currently-running experiment
         handler = self._make_handler()
         self._httpd = ThreadingHTTPServer((host, port), handler)
 
@@ -53,6 +57,7 @@ class DashboardServer:
 
     def _make_handler(self):
         snapshot = self._snapshot
+        server = self  # closure onto the DashboardServer for the experiment downlink
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):  # silence per-request stderr noise
@@ -66,14 +71,51 @@ class DashboardServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _send_json(self, code, obj):
+                self._send(code, json.dumps(obj).encode(), "application/json")
+
             def do_GET(self):
                 if self.path in ("/", "/index.html"):
                     self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+                elif self.path == "/api/experiment/status":
+                    self._send_json(200, {"running": server._running})
                 elif self.path.startswith("/api/state"):
                     body = json.dumps(snapshot()).encode()
                     self._send(200, body, "application/json")
                 else:
                     self._send(404, b"not found", "text/plain")
+
+            def do_POST(self):
+                if self.path != "/api/experiment":
+                    self._send(404, b"not found", "text/plain")
+                    return
+
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    payload = json.loads(raw or b"{}")
+                    opcode = payload["opcode"]
+                except (ValueError, KeyError, TypeError) as e:
+                    self._send_json(400, {"ok": False, "error": f"bad request: {e}"})
+                    return
+
+                if server._dispatcher is None:
+                    self._send_json(503, {"ok": False,
+                                          "error": "no experiment dispatcher configured"})
+                    return
+
+                try:
+                    cmd = control.parse_command(opcode)
+                except ValueError as e:
+                    self._send_json(400, {"ok": False, "error": str(e)})
+                    return
+
+                result = server._dispatcher.dispatch(cmd)
+                if cmd.action == "start":
+                    server._running = cmd.exp
+                elif cmd.action == "stop":
+                    server._running = None
+                self._send_json(200, {"ok": True, "result": result})
 
         return Handler
 
