@@ -37,6 +37,14 @@ The experiment opcodes below are distinguished from those by their leading `X`.
   **single space**, and is a CSV of `key=value` pairs. Values are opaque
   strings (no numeric coercion); key order is preserved.
 
+> **List-valued args use `;` as the sub-delimiter.** Because `,` already
+> separates the `key=value` pairs, a value that is itself a *list* joins its
+> elements with a semicolon `;` on the wire, not a comma. For example the
+> scanner start command with channels 5 and 9 and preamble codes 9–12 is
+> `XS1 channels=5;9,pcodes=9;10;11;12` — the `,` splits it into the two pairs
+> `channels=5;9` and `pcodes=9;10;11;12`, and each value is a `;`-joined list.
+> The scanner controller accepts both `;` and `,` inside a single value.
+
 ### Experiments (`<exp>`)
 
 | Letter | Experiment |

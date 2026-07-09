@@ -15,6 +15,7 @@ all hardware, threads, and real time are kept OUT of the tested seam:
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 
@@ -116,9 +117,14 @@ class ScannerController:
 
     @staticmethod
     def _parse_csv(value: str | None, default: tuple[int, ...]) -> tuple[int, ...]:
+        # List values may arrive comma-separated (from a direct caller) or with
+        # ";" as the sub-delimiter (the wire form — see docs/EXPERIMENTS.md —
+        # because control.py reserves "," for the key=value pair separator).
         if not value or not value.strip():
             return default
-        return tuple(int(tok) for tok in value.split(",") if tok.strip())
+        return tuple(
+            int(tok) for tok in re.split(r"[,;]", value) if tok.strip()
+        )
 
     def _run_step(self, step: SweepStep) -> None:
         ch, pc = step.channel, step.pcode
