@@ -31,6 +31,7 @@ final class BLEManager: NSObject, ObservableObject {
     @Published var frameHistory: [FrameRecord] = []
 
     private let historyKey = "uwb.frameHistory.v1"
+    private let captureKey = "uwb.captureFailed.v1"
     private let historyCap = 300
 
     private var central: CBCentralManager!
@@ -48,12 +49,15 @@ final class BLEManager: NSObject, ObservableObject {
     /// (true), or hold the current code (false).
     func setAutoScan(_ on: Bool) { writeCtrl(on ? "A" : "M") }
 
-    /// Capture CRC-failed frames (the encrypted STS frames from an AirTag).
-    /// Lets the byte card show the real frame bytes even though they fail
-    /// their integrity check. Board default is off; re-sent on reconnect.
-    @Published var captureFailed = false
+    /// Capture CRC-failed frames — surface the raw bytes of frames that fail
+    /// their integrity check (e.g. AirTag STS traffic) instead of discarding
+    /// them. Defaults ON so we never miss a decodable header; the choice is
+    /// persisted across launches and re-sent on reconnect. These bytes are
+    /// unvalidated (the CRC failed), which the UI flags with a "CRC FAIL" badge.
+    @Published var captureFailed = true
     func setCaptureFailed(_ on: Bool) {
         captureFailed = on
+        UserDefaults.standard.set(on, forKey: captureKey)
         writeCtrl(on ? "F1" : "F0")
     }
 
@@ -92,6 +96,11 @@ final class BLEManager: NSObject, ObservableObject {
     override init() {
         super.init()
         loadHistory()
+        // Restore the capture toggle if the user ever changed it; absent a
+        // stored value it stays at its default (ON).
+        if UserDefaults.standard.object(forKey: captureKey) != nil {
+            captureFailed = UserDefaults.standard.bool(forKey: captureKey)
+        }
         central = CBCentralManager(delegate: self, queue: nil)
     }
 

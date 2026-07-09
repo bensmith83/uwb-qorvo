@@ -67,6 +67,9 @@ def main() -> int:
     ap.add_argument("--seconds", type=float, default=30)
     ap.add_argument("--channel", type=int, default=None)
     ap.add_argument("--sweep", action="store_true", help="cycle preamble codes 9-12")
+    ap.add_argument("--code", type=int, default=None,
+                    help="lock one preamble code (9-12) for the whole window; "
+                         "code 10 is where Apple's precision-find lit up")
     ap.add_argument("--port", default=None)
     args = ap.parse_args()
 
@@ -92,6 +95,9 @@ def main() -> int:
             for code in (9, 10, 11, 12):
                 set_preamble(dev, code)
                 total += listen_window(dev, args.seconds / 4, f"pcode {code}")
+        elif args.code is not None:
+            set_preamble(dev, args.code)
+            total = listen_window(dev, args.seconds, f"pcode {args.code}")
         else:
             total = listen_window(dev, args.seconds, "listen")
     finally:

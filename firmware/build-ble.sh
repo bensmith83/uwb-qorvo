@@ -31,6 +31,7 @@ python3 firmware/gen_makefile.py "$EMPROJ" "$OUT" \
   --src "$(pwd)/firmware/ble/uwb_feed.c" \
   --src "$(pwd)/firmware/ble/detector.c" \
   --src "$(pwd)/firmware/ble/framefmt.c" \
+  --src "$(pwd)/firmware/ble/framepoll.c" \
   --src "$(pwd)/firmware/ble/sd_flash_wrap.c" \
   --wrap save_bssConfig \
   --wrap listener2_configure_uwb \

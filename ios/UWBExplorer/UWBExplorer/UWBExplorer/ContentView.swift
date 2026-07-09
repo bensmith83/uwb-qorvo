@@ -343,15 +343,16 @@ struct ContentView: View {
         .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
     }
 
-    /// Toggle raw capture of CRC-failed frames — the encrypted STS frames
-    /// (AirTag) that normally register only as energy. On, the byte card
-    /// shows their actual bytes (header decodes; body is ciphertext).
+    /// Toggle raw capture of CRC-failed frames — frames that fail their
+    /// integrity check (e.g. AirTag STS traffic) normally register only as
+    /// energy. On (the default), the byte card shows their actual bytes
+    /// (header decodes; body is ciphertext) — flagged unvalidated.
     private var captureToggle: some View {
         Toggle(isOn: Binding(get: { ble.captureFailed },
                              set: { ble.setCaptureFailed($0) })) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Capture encrypted bytes").font(.subheadline).bold()
-                Text("Show raw bytes of CRC-failed frames (AirTag)")
+                Text("Allow Failed CRC Check").font(.subheadline).bold()
+                Text("Show raw bytes of frames that fail the CRC check (unvalidated)")
                     .font(.caption2).foregroundStyle(.secondary)
             }
         }

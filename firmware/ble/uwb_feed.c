@@ -20,6 +20,7 @@
 #include "detector.h"
 #include "driver_app_config.h"
 #include "framefmt.h"
+#include "framepoll.h"
 #include "listener2.h"
 #include "translate.h"
 
@@ -80,9 +81,22 @@ static volatile uint32_t m_rng_seq;
 static volatile uint8_t m_rng_ts[5];
 static volatile int m_rng_q;
 
+/* One "captured frame" path, shared by two producers into m_fail_* above:
+ *   - the OK ISR (capture_ok_cb): CRC-good data frames (crc=1), always on;
+ *   - the error ISR (capture_grab): CRC-failed data frames (crc=0), F1-gated.
+ * Apple interleaves rare SP0 MAC-secured data frames (plaintext header, sealed
+ * body) among the SP3 ranging flood, and the 16-slot RX ring overwrites them
+ * long before the 500 ms poll can sample the newest entry — so each producer
+ * stages a copy the instant the frame arrives and the poll drains it by
+ * m_fail_seq. Reusing m_fail_* (no second 127-byte buffer) keeps RAM flat.
+ * These two extra fields tag the capture: which CRC state, and the clock
+ * offset for the CRC-good case. */
+static volatile int m_cap_crc;   /* 1 = CRC-good (OK path), 0 = CRC-fail (F1) */
+static volatile int16_t m_cap_cfo;
+
 void uwb_feed_request_capture(int on) { m_capture_fail = on ? 1 : 0; }
 
-static dwt_cb_t m_real_rx_err, m_real_rx_to;
+static dwt_cb_t m_real_rx_ok, m_real_rx_err, m_real_rx_to;
 
 /* Grab whatever the DW3110 holds on a non-OK reception (CRC error OR
  * timeout) — any event that carries a datalength. Diagnostics in
@@ -128,6 +142,8 @@ static void capture_grab(const dwt_cb_data_t *rxd)
         m_fail_rsl = rsl;
         m_fail_fsl = fsl;
         m_fail_len = rxd->datalength;
+        m_cap_crc = 0; /* this producer only sees CRC-failed frames */
+        m_cap_cfo = 0;
         m_fail_seq++;
         CAPDIAG[3]++;
     }
@@ -155,6 +171,51 @@ static void capture_rx_err_cb(const dwt_cb_data_t *rxd)
     }
 }
 
+/* Stage a CRC-good DATA frame from the OK path so the poll can drain it before
+ * the SP3 flood overwrites the 16-slot ring. Deliberately SPI-free: the vendor
+ * callback (rx_listener_cb) has JUST read the bytes into the newest ring slot,
+ * so we only memcpy from RAM here — no dwt_readrxdata/SPI in the interrupt,
+ * which is what let an earlier version starve the SoftDevice's BLE link. SP3/
+ * no-data frames (ND flag) carry no bytes — skip them (that is the ranging
+ * path). Chain to the real OK cb FIRST so the ring slot is populated. */
+static void capture_ok_cb(const dwt_cb_data_t *rxd)
+{
+    if (m_real_rx_ok != NULL)
+    {
+        m_real_rx_ok(rxd);
+    }
+    if (rxd == NULL || rxd->datalength == 0 ||
+        (rxd->rx_flags & DWT_CB_DATA_RX_FLAG_ND))
+    {
+        return;
+    }
+    listener_info_t *info = getListenerInfoPtr();
+    if (info == NULL)
+    {
+        return;
+    }
+    uint16_t h = info->rxPcktBuf.head;
+    const rx_listener_pckt_t *p =
+        &info->rxPcktBuf.buf[(uint16_t)(h - 1) & (EVENT_BUF_L_SIZE - 1)];
+    uint16_t n = (uint16_t)p->rxDataLen;
+    if (n == 0)
+    {
+        return; /* newest slot isn't a data frame (or head hasn't advanced) */
+    }
+    if (n > FRAME_FULL_MAX)
+    {
+        n = FRAME_FULL_MAX;
+    }
+    memcpy((void *)m_fail_data, p->msg.data, n);
+    memcpy((void *)m_fail_ts, (const void *)p->timeStamp, 5);
+    m_cap_cfo = p->clock_offset;
+    m_fail_rsl = p->rsl100;
+    m_fail_fsl = p->fsl100;
+    m_fail_len = n;
+    m_cap_crc = 1;
+    m_fail_seq++;
+}
+
 static void capture_rx_to_cb(const dwt_cb_data_t *rxd)
 {
     capture_grab(rxd);
@@ -168,9 +229,11 @@ extern void __real_listener2_configure_uwb(dwt_cb_t ok, dwt_cb_t to,
                                            dwt_cb_t err);
 void __wrap_listener2_configure_uwb(dwt_cb_t ok, dwt_cb_t to, dwt_cb_t err)
 {
+    m_real_rx_ok = ok;
     m_real_rx_err = err;
     m_real_rx_to = to;
-    __real_listener2_configure_uwb(ok, capture_rx_to_cb, capture_rx_err_cb);
+    __real_listener2_configure_uwb(capture_ok_cb, capture_rx_to_cb,
+                                   capture_rx_err_cb);
 }
 
 static detector_t m_det;
@@ -232,6 +295,12 @@ void uwb_feed_autostart(void)
         cfg->txCode = 10;
         cfg->rxCode = 10;
     }
+    /* Capture CRC-failed frames by default (matches the app's default-on
+     * "Allow Failed CRC Check" toggle) so a Pi-only or pre-connection session
+     * still keeps the bytes of any data-bearing frame that fails CRC. Cheap:
+     * the capture read is gated on datalength>0, which secured ranging never
+     * hits, so this adds nothing during a precision-find. */
+    uwb_feed_request_capture(1);
     listener_restart();
 }
 
@@ -568,30 +637,32 @@ void uwb_feed_frame_poll(void)
               (uint32_t)crcb + (uint32_t)stse + (uint32_t)to;
     taskEXIT_CRITICAL();
 
-    /* snapshot the latest CRC-failed capture, if enabled. Only the small
-     * metadata is grabbed here; the full bytes are copied out of
-     * m_fail_data in the have_fail branch below (only when we'll use them),
-     * so we don't clobber a fresh frame already staged in m_stream_buf. */
-    static uint32_t last_fail_seq;
-    uint8_t fts[5];
-    uint16_t flen = 0;
-    int frsl = 0, ffsl = 0;
-    uint32_t fseq = 0;
-    int have_fail = 0;
-    if (m_capture_fail)
+    /* snapshot the latest captured frame (m_fail_* — CRC-good data from the OK
+     * ISR, or an F1 CRC-fail from the error ISR). Runs every tick, not gated on
+     * F1, so a CRC-good header is never missed. Copy the bytes into m_stream_buf
+     * now so the FP_CAP branch (and the fragment streamer) can send them. */
+    static uint32_t last_cap_seq;
+    uint8_t cts[5];
+    uint16_t clen = 0;
+    int crsl = 0, cfsl = 0, ccrc = 1;
+    int16_t ccfo = 0;
+    uint32_t cseq = 0;
+    int have_cap = 0;
+    taskENTER_CRITICAL();
+    cseq = m_fail_seq;
+    if (cseq != last_cap_seq)
     {
-        taskENTER_CRITICAL();
-        fseq = m_fail_seq;
-        if (fseq != last_fail_seq)
-        {
-            have_fail = 1;
-            flen = m_fail_len;
-            memcpy(fts, (const void *)m_fail_ts, sizeof fts);
-            frsl = m_fail_rsl;
-            ffsl = m_fail_fsl;
-        }
-        taskEXIT_CRITICAL();
+        have_cap = 1;
+        clen = m_fail_len;
+        memcpy(m_stream_buf, (const void *)m_fail_data,
+               clen < FRAME_FULL_MAX ? clen : FRAME_FULL_MAX);
+        memcpy(cts, (const void *)m_fail_ts, sizeof cts);
+        crsl = m_fail_rsl;
+        cfsl = m_fail_fsl;
+        ccfo = m_cap_cfo;
+        ccrc = m_cap_crc;
     }
+    taskEXIT_CRITICAL();
 
     /* snapshot the latest SP3/STS ranging telemetry (staged in the ISR) */
     static uint32_t last_rng_seq;
@@ -612,7 +683,26 @@ void uwb_feed_frame_poll(void)
     static char json[160];
     dwt_config_t *poll_cfg = get_dwt_config();
     int sts_on = (poll_cfg != NULL && poll_cfg->stsMode != DWT_STS_MODE_OFF);
-    if (fresh && dlen == 0 && sts_on)
+    fp_emit_t emit = frame_poll_select(have_cap, fresh, (int)dlen, sts_on,
+                                       have_rng, (enc_seq != last_enc_seq));
+    if (emit == FP_CAP)
+    {
+        /* a captured data frame — CRC-good header drained from the OK ISR (the
+         * frame the CLI full-dump caught and the poll used to miss), or an F1
+         * CRC-fail capture. Bytes already in m_stream_buf (copied above). */
+        last_cap_seq = cseq;
+        int cfo_pphm =
+            ccrc ? (int)((float)ccfo * (CLOCK_OFFSET_PPM_TO_RATIO * 1e6 * 100))
+                 : 0;
+        int n = frame_encode(m_stream_buf, clen, cts, cfo_pphm, crsl, cfsl,
+                             cseq, ccrc, json, sizeof json);
+        if (n > 0)
+        {
+            ble_frame_push(json, (uint16_t)n);
+        }
+        stream_set(clen, cseq); /* stream the whole frame too */
+    }
+    else if (emit == FP_RANGING)
     {
         /* an STS/SP3 frame that completed via the OK path but carries no
          * payload — surface it as ranging telemetry, not a 0-byte frame */
@@ -625,7 +715,7 @@ void uwb_feed_frame_poll(void)
             ble_frame_push(json, (uint16_t)nn);
         }
     }
-    else if (fresh)
+    else if (emit == FP_CLEAN)
     {
         /* a genuinely clean (CRC-good) frame — rare for encrypted traffic */
         int cfo_pphm =
@@ -640,26 +730,7 @@ void uwb_feed_frame_poll(void)
         }
         stream_set(dlen, seq); /* stream the whole frame too */
     }
-    else if (have_fail)
-    {
-        /* CRC-failed frame captured off the error path: real bytes (header
-         * decodes; STS body is ciphertext), flagged crc:0. Copy the full
-         * frame out of the ISR capture buffer now (fresh didn't run, so
-         * m_stream_buf is free to reuse). */
-        last_fail_seq = fseq;
-        taskENTER_CRITICAL();
-        memcpy(m_stream_buf, (const void *)m_fail_data,
-               flen < FRAME_FULL_MAX ? flen : FRAME_FULL_MAX);
-        taskEXIT_CRITICAL();
-        int n = frame_encode(m_stream_buf, flen, fts, 0, frsl, ffsl, fseq, 0,
-                             json, sizeof json);
-        if (n > 0)
-        {
-            ble_frame_push(json, (uint16_t)n);
-        }
-        stream_set(flen, fseq); /* stream the whole frame too */
-    }
-    else if (have_rng)
+    else if (emit == FP_RNG)
     {
         /* SP3/STS ranging frame: no payload bytes exist, but surface the
          * timing + signal + STS-quality telemetry (computed here in task
@@ -675,7 +746,7 @@ void uwb_feed_frame_poll(void)
             ble_frame_push(json, (uint16_t)n);
         }
     }
-    else if (enc_seq != last_enc_seq)
+    else if (emit == FP_ENC)
     {
         /* no frame bytes this tick, but the radio logged failed
          * receptions — surface the energy signature so the card isn't
