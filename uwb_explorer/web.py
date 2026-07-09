@@ -18,6 +18,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .experiments import control
 from .webmodel import DetectorState
 
 
@@ -35,8 +36,11 @@ class DashboardServer:
     """Serves the page and the state JSON. `snapshot` is a zero-arg callable
     returning the current JSON-able state dict."""
 
-    def __init__(self, snapshot, host: str = "0.0.0.0", port: int = 8080):
+    def __init__(self, snapshot, host: str = "0.0.0.0", port: int = 8080,
+                 dispatcher=None):
         self._snapshot = snapshot
+        self._dispatcher = dispatcher   # control.Dispatcher (the experiment downlink) or None
+        self._running = None            # letter of the currently-running experiment
         handler = self._make_handler()
         self._httpd = ThreadingHTTPServer((host, port), handler)
 
@@ -53,6 +57,7 @@ class DashboardServer:
 
     def _make_handler(self):
         snapshot = self._snapshot
+        server = self  # closure onto the DashboardServer for the experiment downlink
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *args):  # silence per-request stderr noise
@@ -66,21 +71,58 @@ class DashboardServer:
                 self.end_headers()
                 self.wfile.write(body)
 
+            def _send_json(self, code, obj):
+                self._send(code, json.dumps(obj).encode(), "application/json")
+
             def do_GET(self):
                 if self.path in ("/", "/index.html"):
                     self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+                elif self.path == "/api/experiment/status":
+                    self._send_json(200, {"running": server._running})
                 elif self.path.startswith("/api/state"):
                     body = json.dumps(snapshot()).encode()
                     self._send(200, body, "application/json")
                 else:
                     self._send(404, b"not found", "text/plain")
 
+            def do_POST(self):
+                if self.path != "/api/experiment":
+                    self._send(404, b"not found", "text/plain")
+                    return
+
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length) if length else b""
+                try:
+                    payload = json.loads(raw or b"{}")
+                    opcode = payload["opcode"]
+                except (ValueError, KeyError, TypeError) as e:
+                    self._send_json(400, {"ok": False, "error": f"bad request: {e}"})
+                    return
+
+                if server._dispatcher is None:
+                    self._send_json(503, {"ok": False,
+                                          "error": "no experiment dispatcher configured"})
+                    return
+
+                try:
+                    cmd = control.parse_command(opcode)
+                except ValueError as e:
+                    self._send_json(400, {"ok": False, "error": str(e)})
+                    return
+
+                result = server._dispatcher.dispatch(cmd)
+                if cmd.action == "start":
+                    server._running = cmd.exp
+                elif cmd.action == "stop":
+                    server._running = None
+                self._send_json(200, {"ok": True, "result": result})
+
         return Handler
 
 
 def board_loop(state: DetectorState, stop: threading.Event,
                sweep: bool = False, interval: float = 1.0,
-               codes=(9, 10, 11, 12)) -> None:
+               codes=(9, 10, 11, 12), on_connect=None) -> None:
     """Keep a board listening and fold its counters into `state` forever.
 
     Retries connecting so you can boot the unit and plug the board in later
@@ -111,6 +153,11 @@ def board_loop(state: DetectorState, stop: threading.Event,
             cfg = dev.get_uwbcfg() or {}
             state.set_config(channel=cfg.get("CHAN"), pcode=cfg.get("TXCODE"))
             state.set_status("live")
+            # hand the live device to any experiment downlink (e.g. the scanner
+            # controller). Port arbitration with this listener loop is a
+            # flagged follow-up — see serve._LazyDispatcher.
+            if on_connect:
+                on_connect(dev)
             code_cycle = list(codes) if sweep else [cfg.get("TXCODE", 9)]
             ci = 0
             dev.stop()
@@ -134,6 +181,9 @@ def board_loop(state: DetectorState, stop: threading.Event,
         except Exception:  # a serial wedge/reenumerate: back off and reconnect
             state.set_status("error")
             stop.wait(1.5)
+        finally:
+            if on_connect:
+                on_connect(None)  # device is gone; drop the downlink's reference
 
 
 def main(argv=None) -> int:
@@ -213,6 +263,22 @@ PAGE = """<!doctype html>
   .cell .v{ font-size:24px; font-weight:700; font-variant-numeric:tabular-nums; }
   .note{ font-size:12px; color:var(--muted); text-align:center; }
   .decoded{ color:var(--low); font-weight:700; }
+  #experiments{ display:flex; flex-direction:column; gap:10px; }
+  .exp-h{ font-size:15px; margin:4px 0 0; letter-spacing:.02em; }
+  .exp-sub{ font-size:12px; color:var(--muted); font-weight:400; }
+  .exp-card{ display:flex; flex-direction:column; gap:10px; }
+  .exp-row{ display:flex; align-items:center; gap:10px; }
+  .btn{
+    background:var(--accent); color:#04121f; border:0; border-radius:10px;
+    padding:9px 14px; font-size:14px; font-weight:700; cursor:pointer;
+  }
+  .btn-off{ background:var(--idle); color:var(--fg); }
+  .exp-state{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; margin-left:auto; }
+  .exp-prog{ font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .exp-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+  .exp-list li{ font-size:13px; font-variant-numeric:tabular-nums; display:flex; justify-content:space-between; gap:8px; }
+  .exp-list .addr{ font-weight:700; }
+  .exp-list .where{ color:var(--muted); }
 </style>
 </head>
 <body>
@@ -237,6 +303,30 @@ PAGE = """<!doctype html>
   </div>
 
   <div class="note" id="note">Point it at a car, a phone precision-finding, or an AirTag.</div>
+
+  <section id="experiments">
+    <h2 class="exp-h">Scanner <span class="exp-sub">— the nmap for UWB</span></h2>
+    <div class="cell exp-card">
+      <div class="exp-row">
+        <button id="scanStart" class="btn">Start scan</button>
+        <button id="scanStop" class="btn btn-off">Stop</button>
+        <span class="exp-state" id="scanState">idle</span>
+      </div>
+      <div class="exp-prog"><span id="scanStep">0</span>/<span id="scanTotal">0</span> combos swept</div>
+      <ul class="exp-list" id="scanDevices"></ul>
+    </div>
+
+    <h2 class="exp-h">Transponder <span class="exp-sub">— a discoverable UWB landmark</span></h2>
+    <div class="cell exp-card">
+      <div class="exp-row">
+        <button id="respStart" class="btn">Start transponder</button>
+        <button id="respStop" class="btn btn-off">Stop</button>
+        <span class="exp-state" id="respState">idle</span>
+      </div>
+      <div class="exp-prog"><span id="respStep">0</span>/<span id="respTotal">0</span> combos answered</div>
+      <ul class="exp-list" id="respAnswered"></ul>
+    </div>
+  </section>
 
 <script>
 (function(){
@@ -286,6 +376,97 @@ PAGE = """<!doctype html>
     });
   }
   setInterval(tick, 500); tick();
+
+  // --- Scanner experiment: drive the downlink and poll its progress ---
+  function postExp(opcode){
+    return fetch("/api/experiment", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({opcode:opcode})
+    }).then(function(r){ return r.json(); });
+  }
+  var scanState = document.getElementById("scanState");
+  var scanStep = document.getElementById("scanStep");
+  var scanTotal = document.getElementById("scanTotal");
+  var scanDevices = document.getElementById("scanDevices");
+  document.getElementById("scanStart").addEventListener("click", function(){
+    // start the PHY sweep (default channels x preamble codes). Opcode args are
+    // comma-separated key=value pairs, so a LIST value uses ';' as its
+    // sub-delimiter (a ',' inside a value would be rejected by parse_command).
+    postExp("XS1 channels=5;9,pcodes=9;10;11;12")
+      .catch(function(){ scanState.textContent = "error"; });
+  });
+  document.getElementById("scanStop").addEventListener("click", function(){
+    postExp("XS0").catch(function(){ scanState.textContent = "error"; });
+  });
+  function renderScan(st){
+    if(!st){ return; }
+    scanState.textContent = st.running ? "scanning" : "idle";
+    scanStep.textContent = st.step==null? 0 : st.step;
+    scanTotal.textContent = st.total==null? 0 : st.total;
+    var devs = st.devices || [];
+    scanDevices.innerHTML = "";
+    devs.forEach(function(d){
+      var li = document.createElement("li");
+      var a = document.createElement("span"); a.className = "addr"; a.textContent = d.addr;
+      var w = document.createElement("span"); w.className = "where";
+      w.textContent = "ch"+d.channel+" p"+d.pcode+" ×"+d.reply_count;
+      li.appendChild(a); li.appendChild(w); scanDevices.appendChild(li);
+    });
+  }
+  function scanTick(){
+    // /api/experiment/status tells us which experiment (if any) is running;
+    // pull the scanner's detailed sweep progress via its status opcode.
+    fetch("/api/experiment/status").then(function(r){ return r.json(); }).then(function(s){
+      if(s.running === "S"){
+        postExp("XS?").then(function(p){ renderScan(p && p.result); });
+      } else {
+        scanState.textContent = "idle";
+      }
+    }).catch(function(){});
+  }
+  setInterval(scanTick, 1000); scanTick();
+
+  // --- Transponder experiment: answer polls across the PHY space ---
+  var respState = document.getElementById("respState");
+  var respStep = document.getElementById("respStep");
+  var respTotal = document.getElementById("respTotal");
+  var respAnswered = document.getElementById("respAnswered");
+  document.getElementById("respStart").addEventListener("click", function(){
+    // answer polls across the default channels x preamble codes. As with the
+    // scanner, a LIST value uses ';' as its sub-delimiter because opcode args
+    // are comma-separated key=value pairs (',' inside a value is rejected).
+    postExp("XT1 channels=5;9,pcodes=9;10;11;12")
+      .catch(function(){ respState.textContent = "error"; });
+  });
+  document.getElementById("respStop").addEventListener("click", function(){
+    postExp("XT0").catch(function(){ respState.textContent = "error"; });
+  });
+  function renderResp(st){
+    if(!st){ return; }
+    respState.textContent = st.running ? "answering" : "idle";
+    respStep.textContent = st.step==null? 0 : st.step;
+    respTotal.textContent = st.total==null? 0 : st.total;
+    var polls = st.answered || [];
+    respAnswered.innerHTML = "";
+    polls.forEach(function(d){
+      var li = document.createElement("li");
+      var a = document.createElement("span"); a.className = "addr"; a.textContent = d.addr;
+      var w = document.createElement("span"); w.className = "where";
+      w.textContent = "ch"+d.channel+" p"+d.pcode+" ×"+d.poll_count;
+      li.appendChild(a); li.appendChild(w); respAnswered.appendChild(li);
+    });
+  }
+  function respTick(){
+    fetch("/api/experiment/status").then(function(r){ return r.json(); }).then(function(s){
+      if(s.running === "T"){
+        postExp("XT?").then(function(p){ renderResp(p && p.result); });
+      } else {
+        respState.textContent = "idle";
+      }
+    }).catch(function(){});
+  }
+  setInterval(respTick, 1000); respTick();
 })();
 </script>
 </body>

@@ -151,3 +151,70 @@ def test_get_lstat_parses_rx_event_counters():
 def test_get_lstat_returns_none_when_no_block():
     dev, ser = make_scripted({})  # board says nothing
     assert dev.get_lstat() is None
+
+
+# --- active-TX CLI helpers (uwb-qorvo-1hu.1) ---------------------------------
+
+UWBCFG_REPLY = (
+    b'JS00BE{"UWB PARAM":{\r\n"CHAN":9,\r\n"PLEN":64,\r\n"PAC":8,\r\n'
+    b'"TXCODE":9,\r\n"RXCODE":9,\r\n"SFDTYPE":3,\r\n"DATARATE":6810,\r\n'
+    b'"PHRMODE":0,\r\n"PHRRATE":0,\r\n"SFDTO":65,\r\n"STSMODE":0,\r\n'
+    b'"STSLEN":64,\r\n"PDOAMODE":1}}\r\nok\r\n'
+)
+
+
+def test_set_uwbcfg_overrides_given_params_preserving_rest():
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    assert dev.set_uwbcfg(CHAN=5, TXCODE=10, RXCODE=10) is True
+    # only CHAN, TXCODE, RXCODE change; the other 10 fields are preserved
+    assert b"uwbcfg 5 64 8 10 10 3 6810 0 0 65 0 64 1\r\n" in bytes(ser.tx)
+
+
+def test_set_uwbcfg_single_param_matches_set_channel_shape():
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    assert dev.set_uwbcfg(CHAN=5) is True
+    assert b"uwbcfg 5 64 8 9 9 3 6810 0 0 65 0 64 1\r\n" in bytes(ser.tx)
+
+
+def test_set_uwbcfg_returns_false_when_no_cfg():
+    dev, ser = make_scripted({})  # board never answers the uwbcfg query
+    assert dev.set_uwbcfg(CHAN=5) is False
+    # must not emit a set line if it couldn't read the current config
+    assert b"uwbcfg 5 " not in bytes(ser.tx)
+
+
+def test_start_initf_no_args_sends_bare_initf():
+    dev, ser = make_device()
+    dev.start_initf()
+    assert b"initf\r\n" in bytes(ser.tx)
+    assert dev.mode == "INITF"
+
+
+def test_start_initf_appends_key_value_flags():
+    dev, ser = make_device()
+    dev.start_initf(CHAN=9, PCODE=10, ID=42)
+    assert b"initf -CHAN=9 -PCODE=10 -ID=42\r\n" in bytes(ser.tx)
+    assert dev.mode == "INITF"
+
+
+def test_start_respf_no_args_and_flags():
+    dev, ser = make_device()
+    dev.start_respf()
+    assert b"respf\r\n" in bytes(ser.tx)
+    dev.start_respf(CHAN=9, PCODE=10, PADDR=1)
+    assert b"respf -CHAN=9 -PCODE=10 -PADDR=1\r\n" in bytes(ser.tx)
+    assert dev.mode == "RESPF"
+
+
+def test_tcfm_bare_when_no_args():
+    dev, ser = make_device()
+    dev.tcfm()
+    assert bytes(ser.tx) == b"tcfm\r\n"
+    assert dev.mode == "TCFM"
+
+
+def test_tcfm_count_and_interval_positional():
+    dev, ser = make_device()
+    dev.tcfm(count=100, interval=5)
+    assert b"tcfm 100 5\r\n" in bytes(ser.tx)
+    assert dev.mode == "TCFM"

@@ -12,6 +12,7 @@ import threading
 import urllib.error
 import urllib.request
 
+from uwb_explorer.experiments.control import Dispatcher
 from uwb_explorer.web import DashboardServer, poll_once
 from uwb_explorer.webmodel import DetectorState
 
@@ -22,10 +23,50 @@ def _serve(snapshot):
     return srv
 
 
+def _serve_ctl(dispatcher, snapshot=None):
+    """A loopback server wired to an experiment dispatcher (the downlink)."""
+    srv = DashboardServer(snapshot or (lambda: {}), host="127.0.0.1", port=0,
+                          dispatcher=dispatcher)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
 def _fetch(port, path):
     url = f"http://127.0.0.1:{port}{path}"
     with urllib.request.urlopen(url, timeout=3) as r:
         return r.status, r.read().decode(), r.headers.get("Content-Type", "")
+
+
+def _post(port, path, obj):
+    """POST JSON and return (status, body, ctype) for both 2xx and error codes."""
+    url = f"http://127.0.0.1:{port}{path}"
+    data = json.dumps(obj).encode()
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return r.status, r.read().decode(), r.headers.get("Content-Type", "")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(), e.headers.get("Content-Type", "")
+
+
+class _RecordingController:
+    """A fake experiment controller that records dispatched calls."""
+
+    def __init__(self):
+        self.calls = []
+
+    def start(self, args):
+        self.calls.append(("start", args))
+        return {"started": True, "args": args}
+
+    def stop(self, args):
+        self.calls.append(("stop", args))
+        return {"stopped": True}
+
+    def status(self, args):
+        self.calls.append(("status", args))
+        return {"phase": "idle"}
 
 
 def test_api_state_returns_snapshot_json():
@@ -89,3 +130,180 @@ def test_poll_once_survives_none_lstat():
     state = DetectorState()
     snap = poll_once(DeadDev(), state)  # must not raise
     assert snap["hits"] == 0
+
+
+# --- experiment control downlink (POST /api/experiment, GET /api/experiment/status)
+
+def test_post_experiment_dispatches_valid_opcode():
+    ctl = _RecordingController()
+    srv = _serve_ctl(Dispatcher({"S": ctl}))
+    try:
+        status, body, ctype = _post(srv.port, "/api/experiment", {"opcode": "XS1"})
+        assert status == 200
+        assert "json" in ctype
+        payload = json.loads(body)
+        assert payload["ok"] is True
+        assert payload["result"] == {"started": True, "args": {}}
+        assert ctl.calls == [("start", {})]
+    finally:
+        srv.shutdown()
+
+
+def test_post_experiment_passes_args_to_controller():
+    ctl = _RecordingController()
+    srv = _serve_ctl(Dispatcher({"S": ctl}))
+    try:
+        status, body, _ = _post(srv.port, "/api/experiment",
+                                {"opcode": "XS1 chan=9,pcode=10"})
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["ok"] is True
+        # args are opaque strings, order preserved, per the opcode grammar
+        assert ctl.calls == [("start", {"chan": "9", "pcode": "10"})]
+    finally:
+        srv.shutdown()
+
+
+def test_post_experiment_stop_opcode_routes_to_stop():
+    ctl = _RecordingController()
+    srv = _serve_ctl(Dispatcher({"S": ctl}))
+    try:
+        status, body, _ = _post(srv.port, "/api/experiment", {"opcode": "XS0"})
+        assert status == 200
+        assert json.loads(body)["result"] == {"stopped": True}
+        assert ctl.calls == [("stop", {})]
+    finally:
+        srv.shutdown()
+
+
+def test_post_experiment_malformed_opcode_is_400():
+    ctl = _RecordingController()
+    srv = _serve_ctl(Dispatcher({"S": ctl}))
+    try:
+        # 'Q' is not a known experiment letter -> parse_command raises ValueError
+        status, body, ctype = _post(srv.port, "/api/experiment", {"opcode": "XQ1"})
+        assert status == 400
+        assert "json" in ctype
+        payload = json.loads(body)
+        assert payload["ok"] is False
+        assert "error" in payload
+        assert ctl.calls == []  # nothing dispatched
+    finally:
+        srv.shutdown()
+
+
+def test_post_experiment_missing_opcode_is_400():
+    ctl = _RecordingController()
+    srv = _serve_ctl(Dispatcher({"S": ctl}))
+    try:
+        status, body, _ = _post(srv.port, "/api/experiment", {"nope": "XS1"})
+        assert status == 400
+        payload = json.loads(body)
+        assert payload["ok"] is False
+        assert ctl.calls == []
+    finally:
+        srv.shutdown()
+
+
+def test_post_experiment_without_dispatcher_is_503():
+    # a server with no dispatcher configured cannot accept the downlink
+    srv = _serve(lambda: {})
+    try:
+        status, body, _ = _post(srv.port, "/api/experiment", {"opcode": "XS1"})
+        assert status == 503
+        payload = json.loads(body)
+        assert payload["ok"] is False
+    finally:
+        srv.shutdown()
+
+
+# --- scanner experiment UI on the served page (bead uwb-qorvo-1hu.6)
+# These assert only the page MARKUP + client wiring. The live board-loop
+# pause/resume handoff (half-duplex arbitration while the scanner actively
+# polls) needs real hardware and is a deliberate follow-up, not tested here.
+
+def test_page_has_scanner_experiment_section():
+    srv = _serve(lambda: {})
+    try:
+        status, body, ctype = _fetch(srv.port, "/")
+        assert status == 200
+        assert "html" in ctype
+        # an experiments section that exposes a Scanner control
+        assert 'id="experiments"' in body
+        assert "Scanner" in body
+        # the Start control sends the scanner start opcode over the downlink
+        assert "XS1" in body
+    finally:
+        srv.shutdown()
+
+
+def test_page_scanner_posts_and_polls_the_experiment_api():
+    srv = _serve(lambda: {})
+    try:
+        _, body, _ = _fetch(srv.port, "/")
+        # start/stop are POSTed to the experiment downlink...
+        assert "/api/experiment" in body
+        # ...and progress is polled from the status endpoint
+        assert "/api/experiment/status" in body
+        # must stay self-contained (no external requests) for the con hotspot
+        assert "http://" not in body.replace("http://127.0.0.1", "")
+    finally:
+        srv.shutdown()
+
+
+# --- transponder experiment UI on the served page (bead uwb-qorvo-1hu.9)
+# Mirrors the scanner page assertions above: page MARKUP + client wiring only.
+# The live board-loop pause/resume handoff (half-duplex arbitration while the
+# transponder actively answers polls) needs real hardware and is a deliberate
+# follow-up, NOT tested here.
+
+def test_page_has_transponder_experiment_section():
+    srv = _serve(lambda: {})
+    try:
+        status, body, ctype = _fetch(srv.port, "/")
+        assert status == 200
+        assert "html" in ctype
+        # the experiments section now also exposes a Transponder control
+        assert 'id="experiments"' in body
+        assert "Transponder" in body
+        # the Start control sends the transponder start opcode over the downlink
+        assert "XT1" in body
+    finally:
+        srv.shutdown()
+
+
+def test_page_transponder_posts_and_polls_the_experiment_api():
+    srv = _serve(lambda: {})
+    try:
+        _, body, _ = _fetch(srv.port, "/")
+        # start/stop are POSTed to the experiment downlink...
+        assert "/api/experiment" in body
+        # ...and progress is polled from the shared status endpoint
+        assert "/api/experiment/status" in body
+        # must stay self-contained (no external requests) for the con hotspot
+        assert "http://" not in body.replace("http://127.0.0.1", "")
+    finally:
+        srv.shutdown()
+
+
+def test_experiment_status_reflects_running_experiment():
+    ctl = _RecordingController()
+    srv = _serve_ctl(Dispatcher({"S": ctl}))
+    try:
+        # nothing running yet
+        status, body, ctype = _fetch(srv.port, "/api/experiment/status")
+        assert status == 200
+        assert "json" in ctype
+        assert json.loads(body)["running"] is None
+
+        # start scanner -> status reflects the running experiment letter
+        _post(srv.port, "/api/experiment", {"opcode": "XS1"})
+        _, body, _ = _fetch(srv.port, "/api/experiment/status")
+        assert json.loads(body)["running"] == "S"
+
+        # stop scanner -> back to nothing running
+        _post(srv.port, "/api/experiment", {"opcode": "XS0"})
+        _, body, _ = _fetch(srv.port, "/api/experiment/status")
+        assert json.loads(body)["running"] is None
+    finally:
+        srv.shutdown()

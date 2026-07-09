@@ -13,6 +13,8 @@ struct UWBExplorerApp: App {
                     .tabItem { Label("History", systemImage: "clock.arrow.circlepath") }
                 LearnView()
                     .tabItem { Label("Learn", systemImage: "book") }
+                ExperimentsView()
+                    .tabItem { Label("Experiments", systemImage: "flask") }
             }
             .environmentObject(ble)
         }
