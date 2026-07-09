@@ -97,15 +97,39 @@ class Device:
                 return ev.data["UWB PARAM"]
         return None
 
-    def set_channel(self, chan: int) -> bool:
-        """Rewrite UWBCFG with a new channel, preserving other parameters."""
-        params = self.get_uwbcfg()
-        if not params:
+    def set_uwbcfg(self, **params) -> bool:
+        """Rewrite UWBCFG, overriding the given keys and preserving the rest."""
+        current = self.get_uwbcfg()
+        if not current:
             return False
-        params["CHAN"] = chan
-        values = " ".join(str(params[k]) for k in _UWBCFG_ORDER)
+        current.update(params)
+        values = " ".join(str(current[k]) for k in _UWBCFG_ORDER)
         self.session.send(f"uwbcfg {values}")
         return True
+
+    def set_channel(self, chan: int) -> bool:
+        """Rewrite UWBCFG with a new channel, preserving other parameters."""
+        return self.set_uwbcfg(CHAN=chan)
+
+    @staticmethod
+    def _flags(params: dict) -> str:
+        """Build ' -KEY=VALUE ...' from kwargs, keys verbatim, insertion order."""
+        return "".join(f" -{k}={v}" for k, v in params.items())
+
+    def start_initf(self, **params) -> None:
+        self.session.send(f"initf{self._flags(params)}")
+        self.mode = "INITF"
+
+    def start_respf(self, **params) -> None:
+        self.session.send(f"respf{self._flags(params)}")
+        self.mode = "RESPF"
+
+    def tcfm(self, chan=None, pcode=None, count=None, interval=None) -> None:
+        if count is not None and interval is not None:
+            self.session.send(f"tcfm {count} {interval}")
+        else:
+            self.session.send("tcfm")
+        self.mode = "TCFM"
 
     def poll_events(self) -> Iterator[Event]:
         """Drain complete lines currently buffered; yield parsed events."""
