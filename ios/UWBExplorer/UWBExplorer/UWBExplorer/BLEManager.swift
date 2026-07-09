@@ -85,6 +85,12 @@ final class BLEManager: NSObject, ObservableObject {
         writeCtrl("N")
     }
 
+    /// Send an experiment-control opcode ("X<exp><action>[ <args>]") to the
+    /// board over the same fire-and-forget control path the other commands
+    /// use. The caller supplies the wire string; see `ExpOpcode` and the
+    /// shared grammar in `uwb_explorer/experiments/control.py`.
+    func sendExperiment(_ opcode: String) { writeCtrl(opcode) }
+
     private func writeCtrl(_ cmd: String) {
         guard let p = peripheral, let ctrl = ctrlChar else { return }
         // fire-and-forget: the UI updates optimistically and the board's
