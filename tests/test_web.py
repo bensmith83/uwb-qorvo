@@ -251,6 +251,41 @@ def test_page_scanner_posts_and_polls_the_experiment_api():
         srv.shutdown()
 
 
+# --- transponder experiment UI on the served page (bead uwb-qorvo-1hu.9)
+# Mirrors the scanner page assertions above: page MARKUP + client wiring only.
+# The live board-loop pause/resume handoff (half-duplex arbitration while the
+# transponder actively answers polls) needs real hardware and is a deliberate
+# follow-up, NOT tested here.
+
+def test_page_has_transponder_experiment_section():
+    srv = _serve(lambda: {})
+    try:
+        status, body, ctype = _fetch(srv.port, "/")
+        assert status == 200
+        assert "html" in ctype
+        # the experiments section now also exposes a Transponder control
+        assert 'id="experiments"' in body
+        assert "Transponder" in body
+        # the Start control sends the transponder start opcode over the downlink
+        assert "XT1" in body
+    finally:
+        srv.shutdown()
+
+
+def test_page_transponder_posts_and_polls_the_experiment_api():
+    srv = _serve(lambda: {})
+    try:
+        _, body, _ = _fetch(srv.port, "/")
+        # start/stop are POSTed to the experiment downlink...
+        assert "/api/experiment" in body
+        # ...and progress is polled from the shared status endpoint
+        assert "/api/experiment/status" in body
+        # must stay self-contained (no external requests) for the con hotspot
+        assert "http://" not in body.replace("http://127.0.0.1", "")
+    finally:
+        srv.shutdown()
+
+
 def test_experiment_status_reflects_running_experiment():
     ctl = _RecordingController()
     srv = _serve_ctl(Dispatcher({"S": ctl}))

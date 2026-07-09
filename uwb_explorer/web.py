@@ -315,6 +315,17 @@ PAGE = """<!doctype html>
       <div class="exp-prog"><span id="scanStep">0</span>/<span id="scanTotal">0</span> combos swept</div>
       <ul class="exp-list" id="scanDevices"></ul>
     </div>
+
+    <h2 class="exp-h">Transponder <span class="exp-sub">— a discoverable UWB landmark</span></h2>
+    <div class="cell exp-card">
+      <div class="exp-row">
+        <button id="respStart" class="btn">Start transponder</button>
+        <button id="respStop" class="btn btn-off">Stop</button>
+        <span class="exp-state" id="respState">idle</span>
+      </div>
+      <div class="exp-prog"><span id="respStep">0</span>/<span id="respTotal">0</span> combos answered</div>
+      <ul class="exp-list" id="respAnswered"></ul>
+    </div>
   </section>
 
 <script>
@@ -415,6 +426,47 @@ PAGE = """<!doctype html>
     }).catch(function(){});
   }
   setInterval(scanTick, 1000); scanTick();
+
+  // --- Transponder experiment: answer polls across the PHY space ---
+  var respState = document.getElementById("respState");
+  var respStep = document.getElementById("respStep");
+  var respTotal = document.getElementById("respTotal");
+  var respAnswered = document.getElementById("respAnswered");
+  document.getElementById("respStart").addEventListener("click", function(){
+    // answer polls across the default channels x preamble codes. As with the
+    // scanner, a LIST value uses ';' as its sub-delimiter because opcode args
+    // are comma-separated key=value pairs (',' inside a value is rejected).
+    postExp("XT1 channels=5;9,pcodes=9;10;11;12")
+      .catch(function(){ respState.textContent = "error"; });
+  });
+  document.getElementById("respStop").addEventListener("click", function(){
+    postExp("XT0").catch(function(){ respState.textContent = "error"; });
+  });
+  function renderResp(st){
+    if(!st){ return; }
+    respState.textContent = st.running ? "answering" : "idle";
+    respStep.textContent = st.step==null? 0 : st.step;
+    respTotal.textContent = st.total==null? 0 : st.total;
+    var polls = st.answered || [];
+    respAnswered.innerHTML = "";
+    polls.forEach(function(d){
+      var li = document.createElement("li");
+      var a = document.createElement("span"); a.className = "addr"; a.textContent = d.addr;
+      var w = document.createElement("span"); w.className = "where";
+      w.textContent = "ch"+d.channel+" p"+d.pcode+" ×"+d.poll_count;
+      li.appendChild(a); li.appendChild(w); respAnswered.appendChild(li);
+    });
+  }
+  function respTick(){
+    fetch("/api/experiment/status").then(function(r){ return r.json(); }).then(function(s){
+      if(s.running === "T"){
+        postExp("XT?").then(function(p){ renderResp(p && p.result); });
+      } else {
+        respState.textContent = "idle";
+      }
+    }).catch(function(){});
+  }
+  setInterval(respTick, 1000); respTick();
 })();
 </script>
 </body>

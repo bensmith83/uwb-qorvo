@@ -20,6 +20,7 @@ from .webmodel import DetectorState
 from .web import board_loop, DashboardServer
 from .experiments.control import Dispatcher, EXPERIMENTS
 from .experiments.scanner import ScannerController
+from .experiments.transponder import TransponderController
 
 
 class _PlaceholderController:
@@ -50,14 +51,18 @@ def _provisional_dispatcher() -> Dispatcher:
 
 
 def build_dispatcher(device) -> Dispatcher:
-    """Wire the REAL scanner controller onto "S", placeholders for the rest.
+    """Wire the REAL scanner + transponder controllers, placeholders for the rest.
 
-    The scanner (bead .5/.6) is now real: letter "S" drives a live
-    ``ScannerController(device)`` that sweeps the PHY space against the board.
-    T/B/Z keep the provisional placeholder until their controllers land, so the
-    web hub stays fully wired and no letter crashes when driven.
+    The scanner (bead .5/.6) drives a live ``ScannerController(device)`` on "S"
+    that actively sweeps the PHY space; the transponder (bead .8/.9) drives a
+    live ``TransponderController(device)`` on "T" that answers polls across the
+    same space. B/Z keep the provisional placeholder until their controllers
+    land, so the web hub stays fully wired and no letter crashes when driven.
     """
-    registry: dict[str, object] = {"S": ScannerController(device)}
+    registry: dict[str, object] = {
+        "S": ScannerController(device),
+        "T": TransponderController(device),
+    }
     for letter in EXPERIMENTS:
         if letter not in registry:
             registry[letter] = _PlaceholderController(letter)
