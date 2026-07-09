@@ -125,6 +125,12 @@ def dissect(frame: bytes, total: int | None = None) -> list[Field]:
     return out
 
 
+# NOTE: this is the Qorvo DWM3001CDK SDK Developer Guide's printed SP0 listener
+# sample ("Listener application output of SP0 packets", docs/vendor/guide.txt
+# ~line 1414 — byte-for-byte, same TS 0xCE99FA8D). It is used here only as a
+# decode test vector. It is NOT an over-the-air capture: no real AirTag / Nearby
+# Interaction data frame was ever captured on this rig, because AirTag ranging is
+# SP3/STS (no PHR, no PSDU, nothing plaintext). See docs/FINDINGS.md.
 REFERENCE_FRAME = bytes.fromhex(
     "492b01002613"
     "00ff185a08080808080808080808"
@@ -143,5 +149,6 @@ def _print(fields, depth=0):
 
 if __name__ == "__main__":
     print(f"Frame: {len(REFERENCE_FRAME)} bytes  "
-          f"TS=0xCE99FA8D  rsl=-64.7 dBm  (Qorvo DWM3001 LISTENER capture)\n")
+          f"TS=0xCE99FA8D  (Qorvo SDK Developer Guide SP0 sample — "
+          f"NOT an over-the-air capture)\n")
     _print(dissect(REFERENCE_FRAME))

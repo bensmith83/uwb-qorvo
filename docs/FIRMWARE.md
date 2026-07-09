@@ -287,22 +287,25 @@ CONNECTED, `0x11` DISCONNECTED, `0x13` SEC_PARAMS_REQ, `0x21` PHY_UPDATE_REQ,
 `0x23/0x24` data-length update req/done; GATTS `0x55` MTU exchange,
 `0x57` HVN_TX_COMPLETE.
 
-### ★ Why the byte card was blank: WRONG PREAMBLE CODE (not "encryption") ★
-Earlier notes claimed AirTag bytes are unreadable because they're
-STS-encrypted. That's half-wrong. The **802.15.4z header travels in the
-clear** — the code-sweep capture (`untracked-artifacts/airtag-capture.html`)
-decoded a full 69-byte AirTag frame: Frame Control `0x2B49` (Data,
-Security-Enabled, 4z), Dest `0x0001`, 63-byte STS-secured body (visible
-as ciphertext), CRC `0x585F`. Only the *ranging core's meaning* is
-sealed; the **bytes are all capturable**.
+### ★ CORRECTION (2026-07-09): no AirTag bytes were ever captured ★
+An earlier version of this section claimed the "code-sweep capture" decoded
+a full 69-byte AirTag frame (FC `0x2B49`, Dest `0x0001`, CRC `0x585F`).
+**That was wrong** — a confabulation traced and retracted after multi-agent
+validation. That 69-byte frame is the **Qorvo SDK Developer Guide's printed
+SP0 listener sample** (`docs/vendor/guide.txt` ~line 1414, "Listener
+application output of SP0 packets"), used only as a decode test vector in
+`tools/dissect.py`. **No real AirTag / Nearby-Interaction data frame was ever
+decoded on this rig, on any firmware** — consistent with `docs/FINDINGS.md`
+("zero dumpable frames"). AirTag ranging is SP3/STS: no PHR, no PSDU, nothing
+plaintext to capture. The frame BODY is STS/AES-sealed regardless.
 
-The real reason the BLE build showed nothing: the DW3110 only decodes
-frames whose **preamble code** matches the transmitter, and Apple uses
-code **10/11/12** on channel 9 while the vendor default (`DEFAULT_PCODE`)
-is **9**. On-device forensics during a code-9 find: `dwt_isr` fired 141×
-but `listener_task_notify`/`copy_tx_msg`==0 and the RX ring never
-advanced — partial energy, zero completed frames. Yesterday's byte
-capture was on **code 10**.
+What the code-sweep *actually* established is real and is the result:
+**detection**. The DW3110 only reaches a frame's PHR when its **preamble
+code** matches Apple's (**10/11/12** on ch 9; the vendor default
+`DEFAULT_PCODE` is **9**, on which the AirTag is silent) — so code-selective
+energy is a genuine RF fingerprint of a live U1 transmitter. But even with the
+code matched, a precision-find is SP3 ranging with no payload: detection +
+fingerprint + signal telemetry yes, decodable bytes no.
 
 ### ★ Listener restart under the SoftDevice asserts it (id=1) — default is now no-restart ★
 On-device forensics (window 0x2001FF80/0x2001FFA0/0x2001FFE0, all persist

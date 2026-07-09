@@ -84,6 +84,31 @@ eavesdropper (no pairing). **Achieved.**
 - Shareable report: `artifacts/airtag-capture.html` (+ rendered
   `airtag-uwb-capture.png`) — chart, preamble-code explainer, per-code
   breakdown, frame anatomy, Wireshark-style byte dissection, claims.
+  NB: the dissected "frame anatomy" uses the **Qorvo SDK guide's SP0 sample**
+  (`docs/vendor/guide.txt` ~line 1414) as a decode example — it is NOT an
+  over-the-air AirTag capture (see the CORRECTION below).
+
+## ★ CORRECTION & final word (2026-07-09) — the decode wall is the finish line
+
+Three independent deep-dives (incl. a disassembly of the DW3000 driver)
+settled this definitively: **no AirTag/NI frame bytes were ever captured over
+the air, and none can be** by a passive, no-session-key, single-board listener.
+- The "69-byte capture" that suggested otherwise was the vendor guide's printed
+  SP0 sample, mislabeled as a capture in `tools/dissect.py` — the root of much
+  confusion. Corrected.
+- A precision-find is **SP3 STS ranging**: no PHR/PSDU/FCS — nothing to decode.
+  The occasional CRC/header errors a listener logs are that SP3 flood mis-parsed
+  by an STS-off receiver, not recoverable data frames (`g_capdiag[1]=0` across
+  thousands of receptions confirms: zero payload bytes on the error path).
+- Recovering CRC-failed bytes (via `dwt_getframelength()`) is mechanically
+  possible but pointless: it would return STS noise, and a CRC-failed header is
+  bit-corrupt and unverifiable anyway.
+
+**Achieved ceiling (real, shareable):** passively detect an AirTag/U1 find,
+RF-fingerprint it by preamble-code selectivity, lock the PHY, and read
+signal/energy telemetry. The "Encrypted UWB (STS)" card in the app is the
+complete, correct result. Decoding the traffic requires being Apple's paired
+peer — a cryptographic wall, by design, not a rig limitation.
 
 ## Software (uwb_explorer/, TDD — 47 tests green)
 
