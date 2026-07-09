@@ -217,6 +217,40 @@ def test_post_experiment_without_dispatcher_is_503():
         srv.shutdown()
 
 
+# --- scanner experiment UI on the served page (bead uwb-qorvo-1hu.6)
+# These assert only the page MARKUP + client wiring. The live board-loop
+# pause/resume handoff (half-duplex arbitration while the scanner actively
+# polls) needs real hardware and is a deliberate follow-up, not tested here.
+
+def test_page_has_scanner_experiment_section():
+    srv = _serve(lambda: {})
+    try:
+        status, body, ctype = _fetch(srv.port, "/")
+        assert status == 200
+        assert "html" in ctype
+        # an experiments section that exposes a Scanner control
+        assert 'id="experiments"' in body
+        assert "Scanner" in body
+        # the Start control sends the scanner start opcode over the downlink
+        assert "XS1" in body
+    finally:
+        srv.shutdown()
+
+
+def test_page_scanner_posts_and_polls_the_experiment_api():
+    srv = _serve(lambda: {})
+    try:
+        _, body, _ = _fetch(srv.port, "/")
+        # start/stop are POSTed to the experiment downlink...
+        assert "/api/experiment" in body
+        # ...and progress is polled from the status endpoint
+        assert "/api/experiment/status" in body
+        # must stay self-contained (no external requests) for the con hotspot
+        assert "http://" not in body.replace("http://127.0.0.1", "")
+    finally:
+        srv.shutdown()
+
+
 def test_experiment_status_reflects_running_experiment():
     ctl = _RecordingController()
     srv = _serve_ctl(Dispatcher({"S": ctl}))
