@@ -147,7 +147,9 @@ struct ContentView: View {
     /// failure signature).
     @ViewBuilder
     private func frameCard(_ f: UWBFrame, tint: Color) -> some View {
-        if f.isEncrypted {
+        if f.isRanging {
+            rangingCard(f, tint: tint)
+        } else if f.isEncrypted {
             encryptedCard(f)
         } else {
             VStack(alignment: .leading, spacing: 8) {
@@ -184,6 +186,38 @@ struct ContentView: View {
             .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
             .animation(.easeInOut(duration: 0.2), value: f.seq)
         }
+    }
+
+    /// SP3 / STS ranging telemetry. Apple's precision-find frames are
+    /// STS-secured with no payload, so there are no bytes — but each
+    /// reception yields timing, signal levels, and an STS-quality metric.
+    /// (No distance: that needs the two-way exchange we're not part of.)
+    private func rangingCard(_ f: UWBFrame, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("RANGING TELEMETRY (SP3)").font(.caption2).tracking(1)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Label("STS", systemImage: "scope").font(.caption2).bold()
+                    .foregroundStyle(tint)
+            }
+            Text("STS-secured ranging — no payload bytes exist on the air, so this is the timing/signal the radio can still measure.")
+                .font(.footnote).foregroundStyle(.primary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 12) {
+                frameStat("RSL", f.rslText)
+                frameStat("First path", f.fslText)
+                frameStat("Path", f.pathText)
+                frameStat("STS q", f.stsQuality.map(String.init) ?? "–")
+            }
+            if let ts = f.timestamp {
+                Text("RX \(ts)").font(.caption2).monospacedDigit()
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
     }
 
     private func encryptedCard(_ f: UWBFrame) -> some View {

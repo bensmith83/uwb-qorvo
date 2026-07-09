@@ -57,6 +57,18 @@ int main(void)
             frame_encode_encrypted((uint32_t)seq, phe, crcb, stse, to,
                                    out, sizeof out);
         }
+        else if (kind[0] == 'R')
+        {
+            /* ranging telemetry: R <ts5hex> <rsl100> <fsl100> <stsq> <seq> */
+            int rsl, fsl, stsq;
+            unsigned long seq;
+            if (scanf(" %15s %d %d %d %lu", tshex, &rsl, &fsl, &stsq, &seq) != 5)
+                break;
+            uint8_t ts[5] = {0};
+            parse_hex(tshex, ts, sizeof ts);
+            frame_encode_ranging((uint32_t)seq, ts, rsl, fsl, stsq,
+                                 out, sizeof out);
+        }
         else if (kind[0] == 'G')
         {
             /* one fragment: G <hexbytes|-> <seq> <part> */

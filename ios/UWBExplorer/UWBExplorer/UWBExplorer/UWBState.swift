@@ -70,14 +70,21 @@ struct UWBFrame: Codable, Hashable {
     var stse: Int?       // STS errors (the encryption tell)
     var to: Int?         // SFD/preamble/RX timeouts
     var crc: Int?        // 1 = CRC passed, 0 = captured CRC-failed frame
+    // SP3 / STS ranging telemetry (no payload; timing + signal + STS quality)
+    var rng: Int?        // 1 = ranging-telemetry frame
+    var stsQuality: Int? // STS correlation-quality index
 
     enum CodingKeys: String, CodingKey {
         case seq = "i", length = "n", bytesHex = "b"
         case rsl, fsl, cfoPPM = "o", timestamp = "ts"
         case enc, phe, crcb, stse, to, crc
+        case rng, stsQuality = "q"
     }
 
     var isEncrypted: Bool { enc == 1 }
+    /// SP3 ranging telemetry: the radio locked an STS-secured frame but there
+    /// are no payload bytes — only timing/signal/STS-quality measurements.
+    var isRanging: Bool { rng == 1 }
     /// A frame we captured off the error path — real bytes, but it failed
     /// its integrity check (the normal case for STS-encrypted UWB).
     var crcFailed: Bool { crc == 0 }

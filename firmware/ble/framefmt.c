@@ -58,6 +58,23 @@ int frame_encode_encrypted(uint32_t seq, int phe, int crcb, int stse,
                    (unsigned long)seq, phe, crcb, stse, to);
 }
 
+int frame_encode_ranging(uint32_t seq, const uint8_t ts[5], int rsl100,
+                         int fsl100, int sts_q, char *out, uint16_t cap)
+{
+    if (cap < 96)
+    {
+        return 0;
+    }
+    char *p = out;
+    p += sprintf(p, "{\"i\":%lu,\"rng\":1,\"rsl\":", (unsigned long)seq);
+    p += fmt100(p, rsl100);
+    p += sprintf(p, ",\"fsl\":");
+    p += fmt100(p, fsl100);
+    p += sprintf(p, ",\"ts\":\"0x%02X%02X%02X%02X\",\"q\":%d}",
+                 ts[4], ts[3], ts[2], ts[1], sts_q);
+    return (int)(p - out);
+}
+
 int frame_frag_count(uint16_t len)
 {
     return len > 0 ? (len + FRAG_CHUNK - 1) / FRAG_CHUNK : 0;

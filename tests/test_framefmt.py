@@ -156,6 +156,43 @@ class TestFragmentEncode:
         assert run_frag(harness, b"", seq=1, part=0) == ""
 
 
+def run_rng(exe, ts: bytes, rsl100, fsl100, stsq, seq):
+    line = f"R {ts.hex().upper()} {rsl100} {fsl100} {stsq} {seq}"
+    out = subprocess.run([exe], input=line + "\n",
+                         capture_output=True, text=True, check=True)
+    return out.stdout.strip()
+
+
+def rng_oracle(ts, rsl100, fsl100, stsq, seq):
+    ts32 = f"0x{ts[4]:02X}{ts[3]:02X}{ts[2]:02X}{ts[1]:02X}"
+    return (f'{{"i":{seq},"rng":1,"rsl":{fmt100(rsl100)},'
+            f'"fsl":{fmt100(fsl100)},"ts":"{ts32}","q":{stsq}}}')
+
+
+class TestRangingEncode:
+    RNG_CASES = [
+        (bytes([0x10, 0x32, 0x54, 0x76, 0x98]), -9346, -9465, 512, 68),
+        (bytes(5), 0, 0, 0, 0),
+        (bytes([0xFF] * 5), -12000, -11999, 32767, 4294967295),
+    ]
+
+    @pytest.mark.parametrize("ts,rsl,fsl,q,seq", RNG_CASES)
+    def test_matches_oracle(self, harness, ts, rsl, fsl, q, seq):
+        assert run_rng(harness, ts, rsl, fsl, q, seq) == \
+            rng_oracle(ts, rsl, fsl, q, seq)
+
+    @pytest.mark.parametrize("ts,rsl,fsl,q,seq", RNG_CASES)
+    def test_valid_json(self, harness, ts, rsl, fsl, q, seq):
+        doc = json.loads(run_rng(harness, ts, rsl, fsl, q, seq))
+        assert doc["rng"] == 1
+        assert doc["i"] == seq
+        assert "b" not in doc  # ranging telemetry carries no payload
+
+    def test_fits_one_notification(self, harness):
+        out = run_rng(harness, bytes([0xFF] * 5), -12000, -11999, 32767, 4294967295)
+        assert len(out) <= 128
+
+
 def run_enc(exe, seq, phe, crcb, stse, to):
     line = f"S {seq} {phe} {crcb} {stse} {to}"
     out = subprocess.run([exe], input=line + "\n",

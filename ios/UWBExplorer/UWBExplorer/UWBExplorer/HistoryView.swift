@@ -38,12 +38,15 @@ struct HistoryView: View {
     private func rowLabel(_ rec: FrameRecord) -> some View {
         let f = rec.frame
         return HStack(spacing: 12) {
-            Image(systemName: f.isEncrypted ? "lock.fill" : "doc.text")
-                .foregroundStyle(f.isEncrypted ? .orange : .green)
+            Image(systemName: f.isRanging ? "scope"
+                              : f.isEncrypted ? "lock.fill" : "doc.text")
+                .foregroundStyle(f.isRanging ? .blue
+                                 : f.isEncrypted ? .orange : .green)
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(f.isEncrypted ? "Encrypted UWB (STS)"
-                                   : "Frame #\(f.seq ?? 0) · \(f.length ?? 0) B")
+                Text(f.isRanging ? "Ranging (SP3) · STS q \(f.stsQuality ?? 0)"
+                     : f.isEncrypted ? "Encrypted UWB (STS)"
+                     : "Frame #\(f.seq ?? 0) · \(f.length ?? 0) B")
                     .font(.subheadline).bold()
                 Text(rec.date.formatted(date: .abbreviated, time: .standard))
                     .font(.caption).foregroundStyle(.secondary)
@@ -85,7 +88,23 @@ struct FrameDetailView: View {
                         }
                     }
                 }
-                if f.isEncrypted {
+                if f.isRanging {
+                    section("SP3 RANGING — NO PAYLOAD") {
+                        Text("An STS-secured ranging frame (Apple Precision Finding). SP3 carries no data on the air, so there are never payload bytes — only the timing and signal below. Distance isn't derivable from a passive one-way capture; it needs the two-way exchange between the two devices.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    section("RANGING TELEMETRY") {
+                        grid([("RSL", f.rsl.map { String(format: "%.1f dBm", $0) } ?? "–"),
+                              ("First path", f.fsl.map { String(format: "%.1f dBm", $0) } ?? "–"),
+                              ("Path", f.pathText),
+                              ("STS quality", f.stsQuality.map(String.init) ?? "–")])
+                    }
+                    if let ts = f.timestamp {
+                        section("RX TIMESTAMP") {
+                            Text(ts).font(.system(.footnote, design: .monospaced))
+                        }
+                    }
+                } else if f.isEncrypted {
                     section("WHY NO BYTES") {
                         Text("This was STS-encrypted UWB (AirTag / Nearby Interaction). The radio heard it but the frame failed its integrity check, so there are no readable payload bytes — only the failure signature below.")
                             .font(.footnote).foregroundStyle(.secondary)
@@ -117,7 +136,8 @@ struct FrameDetailView: View {
     private func header(_ f: UWBFrame) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 8) {
-                Text(f.isEncrypted ? "Encrypted UWB" : "Frame #\(f.seq ?? 0)")
+                Text(f.isRanging ? "Ranging (SP3)"
+                     : f.isEncrypted ? "Encrypted UWB" : "Frame #\(f.seq ?? 0)")
                     .font(.title2).bold()
                 if f.crcFailed {
                     Text("CRC FAIL").font(.caption).bold()

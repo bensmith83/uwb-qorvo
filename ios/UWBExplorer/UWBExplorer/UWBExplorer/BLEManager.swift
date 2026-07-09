@@ -160,8 +160,14 @@ final class BLEManager: NSObject, ObservableObject {
     /// row so a single find doesn't flood the log.
     private func record(_ frame: UWBFrame) {
         let now = Date()
-        if frame.isEncrypted, let first = frameHistory.first,
-           first.frame.isEncrypted, now.timeIntervalSince(first.date) < 5 {
+        // encrypted-energy and SP3 ranging frames stream ~2/s — collapse a
+        // run of the same kind into one updating row so a find doesn't flood
+        // the log (real decoded byte-frames are always kept individually).
+        let streaming = frame.isEncrypted || frame.isRanging
+        if streaming, let first = frameHistory.first,
+           (first.frame.isEncrypted == frame.isEncrypted &&
+            first.frame.isRanging == frame.isRanging),
+           now.timeIntervalSince(first.date) < 5 {
             frameHistory[0] = FrameRecord(id: first.id, date: now,
                                           channel: state.channel,
                                           code: state.pcode, frame: frame)

@@ -35,6 +35,18 @@ extern const app_definition_t helpers_app_listener[];
  * other fields are written). */
 #define DIAG3 ((volatile uint32_t *)0x2001FF80u)
 
+/* Clean capture-path counters — a plain BSS global (zeroed at startup), read
+ * over SWD via its .map address. DIAG3[6]/[7] collide with ble_app's push
+ * counters and the whole reserved 0x2001FF80 window is already carved up
+ * (DIAG3 / DIAG2 / BLE-evt / boot), so this lives in ordinary RAM. Answers
+ * "does an AirTag reception carry any bytes to capture?":
+ *   [0] total non-OK (err+timeout) callbacks
+ *   [1] callbacks whose datalength > 0  (i.e. something IS capturable)
+ *   [2] max datalength seen
+ *   [3] frames actually stored (capture on AND datalength > 0) */
+volatile uint32_t g_capdiag[4];
+#define CAPDIAG g_capdiag
+
 /*
  * CRC-fail frame capture (control command "F1"/"F0", off by default).
  *
@@ -57,6 +69,16 @@ static volatile uint16_t m_fail_len;
 static volatile uint8_t m_fail_data[FRAME_FULL_MAX];
 static volatile uint8_t m_fail_ts[5];
 static volatile int m_fail_rsl, m_fail_fsl;
+
+/* SP3/STS ranging telemetry. Apple's precision-find frames are STS-secured
+ * with no data payload, so there are no bytes to capture — but each
+ * reception still carries a timestamp and an STS-quality metric. When the
+ * listener is in an STS mode we stage those (cheap register reads only; the
+ * RSSI float math is done later in task context) so the app can show a
+ * ranging-telemetry card instead of a blank/0-byte frame. */
+static volatile uint32_t m_rng_seq;
+static volatile uint8_t m_rng_ts[5];
+static volatile int m_rng_q;
 
 void uwb_feed_request_capture(int on) { m_capture_fail = on ? 1 : 0; }
 
@@ -81,6 +103,17 @@ static void capture_grab(const dwt_cb_data_t *rxd)
     }
     DIAG3[7] = ((uint32_t)withdata << 16) | (rxd->datalength & 0xFFFFu);
 
+    /* clean counters (see CAPDIAG doc) — does the reception carry bytes? */
+    CAPDIAG[0]++;
+    if (rxd->datalength > 0)
+    {
+        CAPDIAG[1]++;
+        if (rxd->datalength > CAPDIAG[2])
+        {
+            CAPDIAG[2] = rxd->datalength;
+        }
+    }
+
     if (m_capture_fail && rxd->datalength > 0)
     {
         uint16_t n = rxd->datalength;
@@ -96,6 +129,20 @@ static void capture_grab(const dwt_cb_data_t *rxd)
         m_fail_fsl = fsl;
         m_fail_len = rxd->datalength;
         m_fail_seq++;
+        CAPDIAG[3]++;
+    }
+
+    /* SP3/STS ranging telemetry: when in an STS mode, stage timing +
+     * STS-quality for every reception (cheap reads only — no float RSSI
+     * math here; frame_poll computes levels in task context). */
+    dwt_config_t *cfg = get_dwt_config();
+    if (cfg != NULL && cfg->stsMode != DWT_STS_MODE_OFF)
+    {
+        int16_t q = 0;
+        listener2_readstsquality(&q);
+        listener2_readrxtimestamp((uint8_t *)m_rng_ts);
+        m_rng_q = q;
+        m_rng_seq++;
     }
 }
 
@@ -546,8 +593,39 @@ void uwb_feed_frame_poll(void)
         taskEXIT_CRITICAL();
     }
 
+    /* snapshot the latest SP3/STS ranging telemetry (staged in the ISR) */
+    static uint32_t last_rng_seq;
+    uint8_t rts[5];
+    int rq = 0;
+    uint32_t rseq = 0;
+    int have_rng = 0;
+    taskENTER_CRITICAL();
+    rseq = m_rng_seq;
+    if (rseq != last_rng_seq)
+    {
+        have_rng = 1;
+        memcpy(rts, (const void *)m_rng_ts, sizeof rts);
+        rq = m_rng_q;
+    }
+    taskEXIT_CRITICAL();
+
     static char json[160];
-    if (fresh)
+    dwt_config_t *poll_cfg = get_dwt_config();
+    int sts_on = (poll_cfg != NULL && poll_cfg->stsMode != DWT_STS_MODE_OFF);
+    if (fresh && dlen == 0 && sts_on)
+    {
+        /* an STS/SP3 frame that completed via the OK path but carries no
+         * payload — surface it as ranging telemetry, not a 0-byte frame */
+        int16_t q = 0;
+        listener2_readstsquality(&q);
+        int nn = frame_encode_ranging(seq, ts, rsl100, fsl100, q, json,
+                                      sizeof json);
+        if (nn > 0)
+        {
+            ble_frame_push(json, (uint16_t)nn);
+        }
+    }
+    else if (fresh)
     {
         /* a genuinely clean (CRC-good) frame — rare for encrypted traffic */
         int cfo_pphm =
@@ -580,6 +658,22 @@ void uwb_feed_frame_poll(void)
             ble_frame_push(json, (uint16_t)n);
         }
         stream_set(flen, fseq); /* stream the whole frame too */
+    }
+    else if (have_rng)
+    {
+        /* SP3/STS ranging frame: no payload bytes exist, but surface the
+         * timing + signal + STS-quality telemetry (computed here in task
+         * context, not the ISR). This is all a passive listener can get
+         * from Apple's secured ranging. */
+        last_rng_seq = rseq;
+        int rsl = 0, fsl = 0;
+        listener2_rssi_cal(&rsl, &fsl);
+        int n = frame_encode_ranging(rseq, rts, rsl, fsl, rq, json,
+                                     sizeof json);
+        if (n > 0)
+        {
+            ble_frame_push(json, (uint16_t)n);
+        }
     }
     else if (enc_seq != last_enc_seq)
     {

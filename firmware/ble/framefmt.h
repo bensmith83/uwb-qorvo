@@ -63,6 +63,24 @@ int frame_encode(const uint8_t *data, uint16_t len, const uint8_t ts[5],
 int frame_encode_encrypted(uint32_t seq, int phe, int crcb, int stse,
                            int to, char *out, uint16_t cap);
 
+/*
+ * Render SP3 / STS ranging telemetry for the frame characteristic. An
+ * STS-secured ranging reception carries NO payload bytes (SP3 has no PSDU),
+ * but it does carry timing, signal levels, and an STS-quality metric — the
+ * only thing a passive listener can surface from Apple's ranging frames:
+ *
+ *   {"i":68,"rng":1,"rsl":-93.46,"fsl":-94.65,"ts":"0x004F3689","q":512}
+ *
+ *   rng  always 1 (lets the app branch to a ranging-telemetry card)
+ *   rsl  received signal level, dBm      fsl  first-path level, dBm
+ *   ts   top 32 bits of the RX timestamp (~4 ns units)
+ *   q    STS quality index (correlation confidence; higher = better lock)
+ *
+ * Returns string length written (excluding NUL), 0 if cap too small.
+ */
+int frame_encode_ranging(uint32_t seq, const uint8_t ts[5], int rsl100,
+                         int fsl100, int sts_q, char *out, uint16_t cap);
+
 /* Number of FRAG_CHUNK-sized fragments a `len`-byte frame splits into
  * (0 for an empty frame). */
 int frame_frag_count(uint16_t len);
