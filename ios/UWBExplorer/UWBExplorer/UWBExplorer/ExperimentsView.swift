@@ -308,14 +308,155 @@ struct ScannerExperimentView: View {
     }
 }
 
+/// Real control UI for the transponder — a discoverable UWB landmark that
+/// answers polls from unknown initiators. Like the scanner it lets the user pick
+/// which PHY combos to listen on — channels {5, 9} and preamble codes
+/// {9, 10, 11, 12} — and composes a START opcode carrying those selections as
+/// `channels=`/`pcodes=` args.
+///
+/// Wire format (see `docs/EXPERIMENTS.md` and `uwb_explorer/experiments`):
+/// list values join with `;` because the shared grammar reserves `,` for the
+/// `key=value` pair separator, so the default command is
+/// `XT1 channels=5;9,pcodes=9;10;11;12`.
 struct TransponderExperimentView: View {
+    @EnvironmentObject var ble: BLEManager
+
+    // Selectable PHY space, matching transponder.DEFAULT_CHANNELS / DEFAULT_PCODES.
+    private static let allChannels = [5, 9]
+    private static let allPcodes = [9, 10, 11, 12]
+
+    // Default selection is everything on (mirrors the Pi-side defaults).
+    @State private var selectedChannels: Set<Int> = [5, 9]
+    @State private var selectedPcodes: Set<Int> = [9, 10, 11, 12]
+
+    /// The composed START command, e.g. `XT1 channels=5;9,pcodes=9;10;11;12`.
+    /// List values are joined with `;` (the `,` is the pair separator).
+    private var startCommand: String {
+        let chans = Self.allChannels
+            .filter { selectedChannels.contains($0) }
+            .map(String.init)
+            .joined(separator: ";")
+        let pcodes = Self.allPcodes
+            .filter { selectedPcodes.contains($0) }
+            .map(String.init)
+            .joined(separator: ";")
+        return ExpOpcode.transponderStart + " channels=" + chans + ",pcodes=" + pcodes
+    }
+
+    private var canStart: Bool {
+        ble.isConnected && !selectedChannels.isEmpty && !selectedPcodes.isEmpty
+    }
+
     var body: some View {
-        ExperimentDetail(
-            title: "Transponder",
-            blurb: "Replies to incoming interrogation frames so you can probe how an initiator behaves in a two-way ranging exchange.",
-            start: ExpOpcode.transponderStart,
-            stop: ExpOpcode.transponderStop,
-            status: ExpOpcode.transponderStatus)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Turns the board into a discoverable UWB landmark that answers polls from unknown initiators on the selected channels and preamble codes. Use it to probe how an initiator behaves in a two-way ranging exchange.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+
+                selectionCard(title: "Channels",
+                              values: Self.allChannels,
+                              selection: $selectedChannels)
+                selectionCard(title: "Preamble codes",
+                              values: Self.allPcodes,
+                              selection: $selectedPcodes)
+
+                // Controls: Start composes the arg'd opcode; Stop/Status are bare.
+                HStack(spacing: 10) {
+                    Button {
+                        ble.sendExperiment(startCommand)
+                    } label: {
+                        Label("Start", systemImage: "play.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canStart)
+
+                    Button {
+                        ble.sendExperiment(ExpOpcode.transponderStop)
+                    } label: {
+                        Label("Stop", systemImage: "stop.fill").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.red)
+
+                    Button {
+                        ble.sendExperiment(ExpOpcode.transponderStatus)
+                    } label: {
+                        Label("Status", systemImage: "info.circle").frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(.secondary)
+                }
+                .disabled(!ble.isConnected)
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+
+                // Preview of the exact wire string, so what gets sent is visible.
+                Text(startCommand)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                resultsCard
+            }
+            .padding()
+        }
+        .navigationTitle("Transponder")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// A titled card of multi-select toggle chips over `values`.
+    private func selectionCard(title: String,
+                               values: [Int],
+                               selection: Binding<Set<Int>>) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.headline)
+            HStack(spacing: 10) {
+                ForEach(values, id: \.self) { value in
+                    let isOn = selection.wrappedValue.contains(value)
+                    Button {
+                        if isOn {
+                            selection.wrappedValue.remove(value)
+                        } else {
+                            selection.wrappedValue.insert(value)
+                        }
+                    } label: {
+                        Text(String(value))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(isOn ? .accentColor : .secondary)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
+    }
+
+    /// Landmark-active status + answered-poll results. A board -> BLE results
+    /// uplink does not exist yet (a later bead), so for now this is an honest
+    /// placeholder rather than faked answered-poll output.
+    private var resultsCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(ble.isConnected ? "Landmark active while running" : "Connect to a board to run",
+                  systemImage: ble.isConnected ? "dot.radiowaves.up.forward" : "wifi.slash")
+                .font(.headline)
+                .foregroundStyle(ble.isConnected ? .green : .secondary)
+            Text("Answered polls will appear here once the board reports them over Bluetooth.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(.ultraThinMaterial))
     }
 }
 
