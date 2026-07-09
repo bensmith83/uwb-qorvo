@@ -12,12 +12,22 @@ from uwb_explorer.experiments.control import (
     format_command,
     parse_command,
 )
+from uwb_explorer.experiments.scanner import (
+    ScanResults,
+    ScannerController,
+    SweepStep,
+    sweep_plan,
+)
 
 __all__ = [
     "ACTIONS",
     "EXPERIMENTS",
     "Dispatcher",
     "ExperimentCommand",
+    "ScanResults",
+    "ScannerController",
+    "SweepStep",
     "format_command",
     "parse_command",
+    "sweep_plan",
 ]
