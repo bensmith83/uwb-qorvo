@@ -32,6 +32,27 @@ def poll_once(device, state: DetectorState) -> dict:
     return state.update(lstat)
 
 
+def listener_step(dev, state: DetectorState, arbiter):
+    """One board_loop listener iteration, gated by the port arbiter.
+
+    When an experiment holds the port (``arbiter.is_active()``) this touches NO
+    device method and returns None, so the passive listener stays off the single
+    serial port. Otherwise it polls as usual, holding the arbiter's device lock
+    for the duration of the poll so a starting experiment's transition barrier
+    can serialize against an in-flight poll (the flag alone leaves a residual
+    overlap window at the Start transition). ``arbiter`` may be None (no
+    arbitration configured), in which case it always polls without a lock. Only
+    ``is_active()`` and ``device()`` are called on the arbiter, so ``web`` needs
+    no import of the arbiter class.
+    """
+    if arbiter is None:
+        return poll_once(dev, state)
+    if arbiter.is_active():
+        return None
+    with arbiter.device():
+        return poll_once(dev, state)
+
+
 class DashboardServer:
     """Serves the page and the state JSON. `snapshot` is a zero-arg callable
     returning the current JSON-able state dict."""
@@ -122,7 +143,7 @@ class DashboardServer:
 
 def board_loop(state: DetectorState, stop: threading.Event,
                sweep: bool = False, interval: float = 1.0,
-               codes=(9, 10, 11, 12), on_connect=None) -> None:
+               codes=(9, 10, 11, 12), on_connect=None, arbiter=None) -> None:
     """Keep a board listening and fold its counters into `state` forever.
 
     Retries connecting so you can boot the unit and plug the board in later
@@ -154,15 +175,45 @@ def board_loop(state: DetectorState, stop: threading.Event,
             state.set_config(channel=cfg.get("CHAN"), pcode=cfg.get("TXCODE"))
             state.set_status("live")
             # hand the live device to any experiment downlink (e.g. the scanner
-            # controller). Port arbitration with this listener loop is a
-            # flagged follow-up — see serve._LazyDispatcher.
+            # controller). Port arbitration with this listener loop is handled by
+            # the `arbiter`: the flag keeps this loop out for the experiment's
+            # window; the device lock (held per-poll by listener_step) lets a
+            # starting experiment barrier against an in-flight poll; and the
+            # quiesce handshake (set_listener_running / mark_quiesced below) makes
+            # the controller's start WAIT until this loop has stopped its listener
+            # and is off the port, so a late board stop can't kill the experiment.
             if on_connect:
                 on_connect(dev)
             code_cycle = list(codes) if sweep else [cfg.get("TXCODE", 9)]
             ci = 0
+            paused = False   # have we handed the port to an active experiment?
             dev.stop()
             dev.start_listener()
+            if arbiter is not None:
+                arbiter.set_listener_running(True)
             while not stop.is_set():
+                # half-duplex handoff via the quiesce handshake: when an
+                # experiment goes active, stop our listener ONCE so the board is
+                # idle for it, then tell the arbiter we're OFF the port
+                # (set_listener_running(False) + mark_quiesced). The controller's
+                # start is BLOCKED in wait_quiesced until this mark, so our
+                # dev.stop() here provably lands BEFORE the controller drives the
+                # port — it can no longer stop the port after the experiment has
+                # started and kill it. Don't touch the device again until the
+                # experiment releases; resume the listener when it goes inactive.
+                if arbiter is not None and arbiter.is_active():
+                    if not paused:
+                        dev.stop()
+                        arbiter.set_listener_running(False)
+                        arbiter.mark_quiesced()
+                        paused = True
+                    stop.wait(interval)
+                    continue
+                if paused:
+                    dev.start_listener()
+                    if arbiter is not None:
+                        arbiter.set_listener_running(True)
+                    paused = False
                 if sweep and len(code_cycle) > 1:
                     ci = (ci + 1) % len(code_cycle)
                     code = code_cycle[ci]
@@ -174,7 +225,7 @@ def board_loop(state: DetectorState, stop: threading.Event,
                     time.sleep(0.2)
                     dev.start_listener()
                     state.set_config(pcode=code)
-                poll_once(dev, state)
+                listener_step(dev, state, arbiter)
                 stop.wait(interval)
             dev.stop()
             ser.close()
