@@ -19,6 +19,7 @@ import threading
 from .webmodel import DetectorState
 from .web import board_loop, DashboardServer
 from .experiments.control import Dispatcher, EXPERIMENTS
+from .experiments.arbiter import PortArbiter, ArbitratedDispatcher
 from .experiments.scanner import ScannerController
 from .experiments.transponder import TransponderController
 
@@ -121,19 +122,26 @@ def main(argv=None) -> int:
 
     # the real scanner controller needs the board Device, which board_loop
     # creates as it owns the single serial port; this proxy receives the live
-    # device via on_connect and lazily builds build_dispatcher(dev). Live
-    # board-loop pause/resume arbitration remains a flagged follow-up (see
-    # _LazyDispatcher).
+    # device via on_connect and lazily builds build_dispatcher(dev).
     dispatcher = _LazyDispatcher()
+
+    # half-duplex port arbitration (bead 1hu.21, resolving the _LazyDispatcher
+    # follow-up): ONE arbiter both owners consult. The HTTP thread's downlink is
+    # wrapped so a start/stop pauses/resumes the arbiter; the board thread's
+    # listener consults the SAME arbiter and yields the single serial port
+    # around an active experiment, so the two never drive it at once.
+    arbiter = PortArbiter()
+    arbitrated = ArbitratedDispatcher(dispatcher, arbiter)
 
     # one board loop feeds everything
     threading.Thread(target=board_loop, args=(state, stop),
-                     kwargs={"sweep": args.sweep, "on_connect": dispatcher.set_device},
+                     kwargs={"sweep": args.sweep, "on_connect": dispatcher.set_device,
+                             "arbiter": arbiter},
                      daemon=True).start()
 
     if not args.no_web:
         srv = DashboardServer(state.snapshot, host=args.host, port=args.port,
-                              dispatcher=dispatcher)
+                              dispatcher=arbitrated)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         print(f"web dashboard on http://{args.host}:{args.port}", file=sys.stderr)
 
