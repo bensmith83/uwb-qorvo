@@ -105,6 +105,15 @@ class _LazyDispatcher:
             self._real = build_dispatcher(self._device)
         return self._real.dispatch(cmd)
 
+    def controller_for(self, exp):
+        # only the REAL controllers are steppable; the provisional placeholders
+        # (used before a board connects) are not, so pumping them is a no-op.
+        if self._device is None:
+            return None
+        if self._real is None:
+            self._real = build_dispatcher(self._device)
+        return self._real.controller_for(exp)
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="UWB unified web+BLE service")
@@ -133,10 +142,11 @@ def main(argv=None) -> int:
     arbiter = PortArbiter()
     arbitrated = ArbitratedDispatcher(dispatcher, arbiter)
 
-    # one board loop feeds everything
+    # one board loop feeds everything; it also PUMPS the active experiment's
+    # sweep forward (bug nmr) while it holds the port during an experiment window.
     threading.Thread(target=board_loop, args=(state, stop),
                      kwargs={"sweep": args.sweep, "on_connect": dispatcher.set_device,
-                             "arbiter": arbiter},
+                             "arbiter": arbiter, "pump": arbitrated.pump},
                      daemon=True).start()
 
     if not args.no_web:
