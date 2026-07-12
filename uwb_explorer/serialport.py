@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import serial
 from serial.tools import list_ports
 
@@ -9,14 +11,23 @@ from serial.tools import list_ports
 NORDIC_VID = 0x1915
 SEGGER_VID = 0x1366
 
+# Pin a specific CLI console when several boards share the bus (e.g. an
+# initiator + a responder): set UWB_CLI_PORT to the exact device path and
+# discovery is bypassed in its favour.
+CLI_PORT_ENV = "UWB_CLI_PORT"
+
 
 def find_cli_port() -> str | None:
     """Return the device path most likely to be the CLI console.
 
-    Preference: a Nordic-VID CDC port (J20) > any non-SEGGER ACM > None.
+    An explicit ``UWB_CLI_PORT`` pin wins (multi-board rigs). Otherwise the
+    preference is: a Nordic-VID CDC port (J20) > any non-SEGGER ACM > None.
     The SEGGER J-Link VCOM is explicitly de-prioritised because the QM33
     CLI firmware does NOT expose its console there.
     """
+    pinned = os.environ.get(CLI_PORT_ENV, "").strip()
+    if pinned:
+        return pinned
     ports = list(list_ports.comports())
     for p in ports:
         if p.vid == NORDIC_VID:

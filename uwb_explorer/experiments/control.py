@@ -126,3 +126,11 @@ class Dispatcher:
         if controller is None:
             raise ValueError(f"no controller registered for experiment {cmd.exp!r}")
         return getattr(controller, cmd.action)(cmd.args)
+
+    def controller_for(self, exp: str):
+        """Return the controller registered for ``exp`` (or None if unknown).
+
+        Lets a caller reach the controller a start drove — e.g. the arbiter's
+        pump() calling its ``step()`` to advance a multi-combo sweep.
+        """
+        return self._registry.get(exp)

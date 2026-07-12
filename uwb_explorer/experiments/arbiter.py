@@ -149,6 +149,40 @@ class ArbitratedDispatcher:
         self._inner = inner
         self._arbiter = arbiter
         self._start_timeout = start_timeout
+        # the controller a start drove, IFF it can be pumped (has step()). The
+        # board thread advances a multi-combo sweep by calling pump(); a stop or
+        # exhaustion clears it. Plain attribute: reads/writes are atomic under
+        # the GIL, and the device lock orders the pump/stop critical sections.
+        self._active_ctrl = None
+
+    def _steppable(self, exp):
+        """The controller for ``exp`` if it exposes a callable step(), else None."""
+        getter = getattr(self._inner, "controller_for", None)
+        if getter is None:
+            return None
+        ctrl = getter(exp)
+        return ctrl if callable(getattr(ctrl, "step", None)) else None
+
+    def pump(self) -> bool:
+        """Advance the active experiment one step under the device lock.
+
+        Returns True if it stepped and more work remains, False if there is
+        nothing to pump (no active experiment, not steppable, or exhausted). The
+        board thread calls this each idle iteration while an experiment is active,
+        holding the device lock so a step never races a listener poll. A
+        concurrent stop() clears ``_active_ctrl`` under the same lock, so a step
+        can never run after (or during) the controller being stopped.
+        """
+        if self._active_ctrl is None:
+            return False
+        with self._arbiter.device():
+            ctrl = self._active_ctrl        # re-read under the lock (stop clears it)
+            if ctrl is None:
+                return False
+            more = bool(ctrl.step())
+        if not more:
+            self._active_ctrl = None        # sweep exhausted: stop pumping
+        return more
 
     def dispatch(self, cmd):
         if cmd.action == "start":
@@ -169,15 +203,23 @@ class ArbitratedDispatcher:
             # NOTE (finding #3): if inner.dispatch raises here, the arbiter stays
             # paused and server._running is left unset — a misleading "idle" UI
             # for a failed start. Low priority; left as-is.
-            return self._inner.dispatch(cmd)
+            result = self._inner.dispatch(cmd)
+            # start() ran combo 0; if the controller can step, arm the pump so the
+            # board thread drives the rest of the sweep (bug nmr — previously the
+            # sweep stalled on combo 0 because nothing ever called step()).
+            self._active_ctrl = self._steppable(cmd.exp)
+            return result
         if cmd.action == "stop":
             # ALWAYS resume, even if the inner controller raises — otherwise the
             # arbiter stays paused forever and the board listener is wedged off
             # the port. try/finally preserves the normal-path ordering: the
             # inner runs (and returns its value) while still active, and resume
-            # runs only after.
+            # runs only after. The stop (and the clear of the pump target) runs
+            # UNDER the device lock so it can never overlap an in-flight pump step.
             try:
-                return self._inner.dispatch(cmd)
+                with self._arbiter.device():
+                    self._active_ctrl = None
+                    return self._inner.dispatch(cmd)
             finally:
                 self._arbiter.resume()
         return self._inner.dispatch(cmd)

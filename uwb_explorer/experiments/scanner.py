@@ -24,9 +24,6 @@ from uwb_explorer.parser import Ack, ListenerFrame, RangingResult
 # range-entry statuses that count as a successful reply to our poll
 _OK_STATUSES = {"Ok", "SUCCESS"}
 
-# sentinel addr for an anonymous "ok" acknowledgement (no source address)
-_ACK_ADDR = "ok"
-
 DEFAULT_CHANNELS = (5, 9)
 DEFAULT_PCODES = (9, 10, 11, 12)
 
@@ -84,11 +81,11 @@ class ScanResults:
             for entry in event.results:
                 if entry.status in _OK_STATUSES:
                     self._hit(entry.addr, step, timestamp)
-        elif isinstance(event, Ack):
-            if event.ok:
-                self._hit(_ACK_ADDR, step, timestamp)
-        elif isinstance(event, ListenerFrame):
-            # a promiscuous sniff frame is not a reply to our active poll
+        elif isinstance(event, (Ack, ListenerFrame)):
+            # NOT a discovery. A bare "ok" Ack is the CLI acking our own `initf`
+            # command echo (dl1) — counting it fabricated a phantom device on
+            # every scan; a real responder arrives as a RangingResult. A
+            # promiscuous ListenerFrame isn't a reply to our active poll either.
             pass
 
     def to_list(self) -> list[dict]:
@@ -105,9 +102,15 @@ class ScannerController:
     needed.
     """
 
-    def __init__(self, device, now=time.monotonic):
+    def __init__(self, device, now=time.monotonic, sleep=time.sleep, dwell=1.0):
         self._device = device
         self._now = now
+        # after firing `initf` a combo must DWELL before draining: on hardware a
+        # responder's ranging blocks arrive ~200ms later (every ranging period),
+        # so an immediate poll sees nothing. `sleep`/`dwell` are injected so the
+        # tests stay instant (dwell=0 or a no-op sleep) while hardware waits ~1s.
+        self._sleep = sleep
+        self._dwell = dwell
         self._plan: list[SweepStep] = []
         self._results = ScanResults()
         self._index = 0
@@ -133,6 +136,9 @@ class ScannerController:
         # reply to the poll we are about to send
         self._device.session.flush_input()
         self._device.start_initf(CHAN=ch, PCODE=pc)
+        # dwell so a responder on this combo has time to answer before we drain
+        # (its ranging blocks arrive one ranging-period later, not instantly)
+        self._sleep(self._dwell)
         for ev in self._device.poll_events():
             self._results.record(step, ev, self._now())
 

@@ -160,3 +160,12 @@ def test_dispatcher_rejects_unknown_experiment():
     disp = Dispatcher({"S": FakeController()})
     with pytest.raises(ValueError):
         disp.dispatch(parse_command("XT1"))
+
+
+def test_dispatcher_controller_for_returns_the_registered_controller():
+    # the arbiter's pump() needs to reach the controller a start drove to call
+    # its step(); controller_for exposes it (None for an unknown letter).
+    scanner = FakeController()
+    disp = Dispatcher({"S": scanner})
+    assert disp.controller_for("S") is scanner
+    assert disp.controller_for("Z") is None

@@ -372,3 +372,141 @@ def test_arbitrated_dispatcher_leaves_arbiter_untouched_on_status():
     wrapped.dispatch(parse_command("XS?"))
     assert arb.is_active() is False            # untouched
     assert len(inner.cmds) == 1                # but still delegated
+
+
+# --- pump(): drive a multi-step experiment forward (bug nmr) -----------------
+# The scanner/transponder sweep only ever ran combo 0 because nothing called
+# controller.step() after start(). The board thread (which owns the port during
+# the active window) must PUMP the active controller. ArbitratedDispatcher knows
+# which controller a start drove, so it exposes pump(); board_loop calls it.
+
+class _SteppableController:
+    """A controller whose sweep needs 3 steps total (start does #0)."""
+
+    def __init__(self):
+        self.steps = 0
+        self.running = False
+
+    def start(self, args):
+        self.running = True
+        return {"ok": True}
+
+    def stop(self, args):
+        self.running = False
+        return {"ok": True}
+
+    def status(self, args):
+        return {"running": self.running}
+
+    def step(self):
+        self.steps += 1
+        return self.steps < 3   # two more steps of work after start
+
+
+class _SteppableInner:
+    """Inner dispatcher exposing controller_for so the wrapper can find step()."""
+
+    def __init__(self, controller):
+        self._c = controller
+        self.cmds = []
+
+    def dispatch(self, cmd):
+        self.cmds.append(cmd)
+        return getattr(self._c, cmd.action)(cmd.args)
+
+    def controller_for(self, exp):
+        return self._c
+
+
+def test_pump_advances_the_active_steppable_after_start():
+    from uwb_explorer.experiments.arbiter import PortArbiter, ArbitratedDispatcher
+    arb = PortArbiter()
+    ctrl = _SteppableController()
+    wrapped = ArbitratedDispatcher(_SteppableInner(ctrl), arb)
+
+    wrapped.dispatch(parse_command("XS1"))     # start
+    assert wrapped.pump() is True              # step 1 (more remains)
+    assert wrapped.pump() is True              # step 2
+    assert wrapped.pump() is False             # exhausted -> stop pumping
+    assert ctrl.steps == 3
+
+
+def test_pump_is_a_noop_before_any_start():
+    from uwb_explorer.experiments.arbiter import PortArbiter, ArbitratedDispatcher
+    arb = PortArbiter()
+    ctrl = _SteppableController()
+    wrapped = ArbitratedDispatcher(_SteppableInner(ctrl), arb)
+
+    assert wrapped.pump() is False             # nothing active
+    assert ctrl.steps == 0
+
+
+def test_pump_stops_after_the_experiment_is_stopped():
+    from uwb_explorer.experiments.arbiter import PortArbiter, ArbitratedDispatcher
+    arb = PortArbiter()
+    ctrl = _SteppableController()
+    wrapped = ArbitratedDispatcher(_SteppableInner(ctrl), arb)
+
+    wrapped.dispatch(parse_command("XS1"))     # start
+    wrapped.pump()                             # step 1
+    wrapped.dispatch(parse_command("XS0"))     # stop clears the active controller
+    before = ctrl.steps
+    assert wrapped.pump() is False             # no more stepping after stop
+    assert ctrl.steps == before
+
+
+def test_pump_is_a_noop_when_the_active_controller_has_no_step():
+    # placeholder controllers (beacon/fuzzer) have no step(); pumping must be safe
+    from uwb_explorer.experiments.arbiter import PortArbiter, ArbitratedDispatcher
+    arb = PortArbiter()
+
+    class _NoStep:
+        def start(self, args): return {"ok": True}
+        def stop(self, args): return {"ok": True}
+
+    class _Inner:
+        def __init__(self): self.cmds = []
+        def dispatch(self, cmd):
+            self.cmds.append(cmd)
+            return {"ok": True}
+        def controller_for(self, exp): return _NoStep()
+
+    wrapped = ArbitratedDispatcher(_Inner(), arb)
+    wrapped.dispatch(parse_command("XB1"))     # beacon placeholder start
+    assert wrapped.pump() is False             # nothing steppable, no crash
+
+
+def test_pump_steps_under_the_device_lock():
+    # the pump drives the controller (which touches the serial port), so it MUST
+    # hold the device lock — otherwise a listener poll could slip onto the port
+    # mid-step. While step() runs, a non-blocking acquire must fail.
+    from uwb_explorer.experiments.arbiter import PortArbiter, ArbitratedDispatcher
+    arb = PortArbiter()
+    observed = {}
+
+    class _LockObservingController:
+        running = True
+        def start(self, args): return {"ok": True}
+        def step(self):
+            got = arb.try_acquire(0.0)
+            if got:
+                arb.release()
+            observed["held"] = not got
+            return False
+
+    class _Inner:
+        def __init__(self): self._c = _LockObservingController()
+        def dispatch(self, cmd): return getattr(self._c, cmd.action)(cmd.args)
+        def controller_for(self, exp): return self._c
+
+    wrapped = ArbitratedDispatcher(_Inner(), arb)
+    wrapped.dispatch(parse_command("XS1"))
+    wrapped.pump()
+    assert observed["held"] is True
+
+
+def test_board_loop_accepts_a_pump_param():
+    # board_loop is hardware-bound; only assert the seam exists so the board
+    # thread can pump the active experiment forward.
+    sig = inspect.signature(web.board_loop)
+    assert "pump" in sig.parameters

@@ -143,7 +143,8 @@ class DashboardServer:
 
 def board_loop(state: DetectorState, stop: threading.Event,
                sweep: bool = False, interval: float = 1.0,
-               codes=(9, 10, 11, 12), on_connect=None, arbiter=None) -> None:
+               codes=(9, 10, 11, 12), on_connect=None, arbiter=None,
+               pump=None) -> None:
     """Keep a board listening and fold its counters into `state` forever.
 
     Retries connecting so you can boot the unit and plug the board in later
@@ -207,6 +208,12 @@ def board_loop(state: DetectorState, stop: threading.Event,
                         arbiter.set_listener_running(False)
                         arbiter.mark_quiesced()
                         paused = True
+                    # drive the active experiment's sweep forward one combo per
+                    # iteration (bug nmr): the board thread owns the port now, so
+                    # it pumps step() under the device lock. Without this the
+                    # sweep stalled on combo 0 (start ran it, nothing advanced).
+                    if pump is not None:
+                        pump()
                     stop.wait(interval)
                     continue
                 if paused:

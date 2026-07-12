@@ -104,16 +104,16 @@ def test_success_status_also_counts_and_non_ok_and_error_ack_do_not():
     assert devices[0]["addr"] == "0x00AB"
 
 
-def test_ack_ok_counts_as_a_reply_on_the_combo():
+def test_bare_ack_ok_is_not_a_discovery():
+    # A bare "ok" Ack is the CLI acking our own `initf` command echo, NOT a
+    # responder on the air (dl1): on hardware the initiator prints "ok" right
+    # after `initf`, and counting it fabricated a phantom device on every scan.
+    # A genuine responder shows up as a RangingResult (see the _ok_reply tests).
     res = ScanResults()
     step = SweepStep(channel=5, pcode=11)
     res.record(step, Ack(ok=True), timestamp=5.0)
 
-    devices = res.to_list()
-    assert len(devices) == 1
-    assert devices[0]["channel"] == 5
-    assert devices[0]["pcode"] == 11
-    assert devices[0]["reply_count"] == 1
+    assert res.to_list() == []
 
 
 def test_repeated_reply_same_combo_increments_count_and_updates_last_seen():
@@ -169,7 +169,7 @@ def _fixed_clock(t=1000.0):
 def test_start_configures_the_first_combo_and_polls():
     # set_uwbcfg needs the board to answer the uwbcfg query
     dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = ScannerController(dev, now=_fixed_clock())
+    ctrl = ScannerController(dev, now=_fixed_clock(), dwell=0)
     ctrl.start({})  # defaults -> first combo is channel 5, pcode 9
 
     tx = bytes(ser.tx)
@@ -181,7 +181,7 @@ def test_start_configures_the_first_combo_and_polls():
 def test_start_records_a_discovered_reply_into_status():
     # the board answers the uwbcfg query, and replies to our initf poll
     dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY, "initf": RANGING_REPLY})
-    ctrl = ScannerController(dev, now=_fixed_clock(1000.0))
+    ctrl = ScannerController(dev, now=_fixed_clock(1000.0), dwell=0)
     ctrl.start({})
 
     devices = ctrl.status({})["devices"]
@@ -205,7 +205,7 @@ def test_stop_sends_stop_and_leaves_the_device_idle():
 
 def test_status_reports_progress_and_a_jsonable_snapshot():
     dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = ScannerController(dev, now=_fixed_clock())
+    ctrl = ScannerController(dev, now=_fixed_clock(), dwell=0)
     ctrl.start({})
 
     st = ctrl.status({})
@@ -217,7 +217,7 @@ def test_status_reports_progress_and_a_jsonable_snapshot():
 
 def test_blank_args_use_defaults_and_custom_args_are_honored():
     dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = ScannerController(dev, now=_fixed_clock())
+    ctrl = ScannerController(dev, now=_fixed_clock(), dwell=0)
 
     ctrl.start({})  # blank -> channels 5/9, pcodes 9-12
     assert ctrl.status({})["total"] == 8
@@ -228,7 +228,7 @@ def test_blank_args_use_defaults_and_custom_args_are_honored():
 
 def test_step_drives_the_next_combo_without_threads():
     dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = ScannerController(dev, now=_fixed_clock())
+    ctrl = ScannerController(dev, now=_fixed_clock(), dwell=0)
     # two combos: (5, 9) then (9, 9)
     ctrl.start({"channels": "5,9", "pcodes": "9"})  # drives the first, (5, 9)
 
@@ -236,5 +236,32 @@ def test_step_drives_the_next_combo_without_threads():
     tx = bytes(ser.tx)
     assert b"uwbcfg 9 " in tx
     assert b"initf -CHAN=9 -PCODE=9" in tx
+
+
+def test_run_step_dwells_after_initf_so_late_replies_are_captured():
+    # On hardware the responder's ranging blocks arrive ~200ms AFTER `initf`,
+    # so a scan that drains immediately sees nothing. The step MUST dwell before
+    # polling. Model that: the reply is delivered ONLY when the injected sleep
+    # (the dwell) fires — with no dwell, no discovery.
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})  # NOTE: no initf reply
+    def dwell_delivers(_secs):
+        ser.feed(RANGING_REPLY)  # the responder answers during the dwell window
+    ctrl = ScannerController(dev, now=_fixed_clock(1000.0),
+                             sleep=dwell_delivers, dwell=0.5)
+    ctrl.start({"channels": "9", "pcodes": "9"})
+
+    devices = ctrl.status({})["devices"]
+    assert len(devices) == 1
+    assert devices[0]["addr"] == "0x0001"
+    assert devices[0]["channel"] == 9
+
+
+def test_run_step_sleeps_for_the_configured_dwell():
+    dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    slept: list[float] = []
+    ctrl = ScannerController(dev, now=_fixed_clock(),
+                             sleep=lambda s: slept.append(s), dwell=0.75)
+    ctrl.start({"channels": "9", "pcodes": "9"})
+    assert 0.75 in slept
 
     assert ctrl.step() is False  # sweep exhausted
