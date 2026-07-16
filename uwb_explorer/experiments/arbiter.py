@@ -181,7 +181,12 @@ class ArbitratedDispatcher:
                 return False
             more = bool(ctrl.step())
         if not more:
-            self._active_ctrl = None        # sweep exhausted: stop pumping
+            # sweep exhausted on its own: stop pumping AND release the port so the
+            # board's passive listener resumes automatically — no explicit XS0
+            # needed (bug 09r). Previously the arbiter stayed paused here, wedging
+            # the listener off the port forever after a natural completion.
+            self._active_ctrl = None
+            self._arbiter.resume()
         return more
 
     def dispatch(self, cmd):

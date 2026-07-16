@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from uwb_explorer.parser import Ack, ListenerFrame, RangeEntry, RangingResult
 from tests.test_device import UWBCFG_REPLY, make_device, make_scripted
 
@@ -262,6 +264,51 @@ def test_run_step_sleeps_for_the_configured_dwell():
     ctrl = ScannerController(dev, now=_fixed_clock(),
                              sleep=lambda s: slept.append(s), dwell=0.75)
     ctrl.start({"channels": "9", "pcodes": "9"})
-    assert 0.75 in slept
+    # the dwell budget is now spent across several short sub-poll slices (bug
+    # 4hg), so assert the TOTAL slept equals the configured dwell, not that a
+    # single 0.75s sleep happened. No reply lands, so every slice is used.
+    assert sum(slept) == pytest.approx(0.75)
 
     assert ctrl.step() is False  # sweep exhausted
+
+
+def test_first_combo_late_reply_is_captured_by_repeated_polling():
+    # BUG uwb-qorvo-4hg: on hardware the responder's FIRST ranging block arrives
+    # a few hundred ms AFTER `initf`, so a single sleep-then-drain on the first
+    # combo (the one run inside start()) misses it — a targeted single-combo scan
+    # returned devices=[]. The step must poll poll_events() REPEATEDLY across the
+    # dwell budget until a hit lands. Model a responder that only answers after a
+    # few sub-poll slices: the reply is fed on the 3rd slice, so a lone drain sees
+    # nothing while repeated draining captures it.
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})  # NOTE: no initf reply
+    calls = {"n": 0}
+
+    def late_reply(_secs):
+        calls["n"] += 1
+        if calls["n"] == 3:            # answers only after a couple sub-polls
+            ser.feed(RANGING_REPLY)
+
+    ctrl = ScannerController(dev, now=_fixed_clock(1000.0),
+                             sleep=late_reply, dwell=0.5)
+    ctrl.start({"channels": "9", "pcodes": "9"})  # single combo == the first
+
+    devices = ctrl.status({})["devices"]
+    assert len(devices) == 1
+    assert devices[0]["addr"] == "0x0001"
+    assert devices[0]["channel"] == 9
+
+
+def test_running_clears_when_the_sweep_is_exhausted():
+    # BUG uwb-qorvo-09r: status()['running'] stayed True forever after the sweep
+    # exhausted (only stop() cleared it), wedging the port arbiter active so the
+    # passive listener never resumed. Once every combo has been driven
+    # (index >= total) the scan is DONE and running must report False WITHOUT an
+    # explicit stop.
+    dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    ctrl = ScannerController(dev, now=_fixed_clock(), dwell=0)
+    ctrl.start({"channels": "5,9", "pcodes": "9"})   # two combos, first driven
+    assert ctrl.status({})["running"] is True        # combo 2 still pending
+
+    assert ctrl.step() is True    # drive combo 2 (now index == total)
+    assert ctrl.step() is False   # exhausted
+    assert ctrl.status({})["running"] is False
