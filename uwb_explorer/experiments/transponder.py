@@ -7,7 +7,7 @@ from unknown initiators, and aggregates the answered polls (initiator addr,
 count, distance/rssi) into a report. As with the scanner, all hardware,
 threads, and real time are kept OUT of the tested seam:
 
-  * :func:`config_plan` reuses the scanner's :class:`SweepStep` /
+  * :func:`config_plan` reuses the shared :class:`SweepStep` /
     :func:`sweep_plan` — a PHY combo is a PHY combo whether we poll or answer.
   * :class:`TransponderResults` folds parser Events into an answered-polls
     report keyed by (initiator addr, combo), with the clock INJECTED as an
@@ -15,21 +15,38 @@ threads, and real time are kept OUT of the tested seam:
   * :class:`TransponderController` is a start/stop/status controller (duck-typed
     for :class:`uwb_explorer.experiments.control.Dispatcher`) that drives one
     combo per :meth:`~TransponderController.step` — no threads or sleeps.
+
+The start/step/stop stepping skeleton, the repeated-poll dwell (bug
+uwb-qorvo-4hg), and the running-clears-on-exhaustion behavior (bug
+uwb-qorvo-09r) all live in the shared
+:class:`~uwb_explorer.experiments.sweep.SweepController` base (bead
+uwb-qorvo-1hu.20) — hardware-validated fixes made for the scanner that the
+transponder now inherits too. This module supplies only the
+transponder-specific hooks: the ``respf`` ranging role, :class:`TransponderResults`,
+and the ``"answered"`` status key.
 """
 
 from __future__ import annotations
 
-import re
-import time
-
 from uwb_explorer.parser import Ack, ListenerFrame, RangingResult
 
-from uwb_explorer.experiments.scanner import (
+from uwb_explorer.experiments.sweep import (
     DEFAULT_CHANNELS,
     DEFAULT_PCODES,
+    SweepController,
     SweepStep,
     sweep_plan,
 )
+
+__all__ = [
+    "DEFAULT_CHANNELS",
+    "DEFAULT_PCODES",
+    "SweepStep",
+    "TransponderController",
+    "TransponderResults",
+    "config_plan",
+    "sweep_plan",
+]
 
 # range-entry statuses that count as a poll we successfully answered
 _OK_STATUSES = {"Ok", "SUCCESS"}
@@ -56,9 +73,19 @@ class TransponderResults:
     def __init__(self):
         # (addr, channel, pcode) -> answered-poll dict
         self._polls: dict[tuple[str, int, int], dict] = {}
+        # monotonic count of answered polls folded in; lets the shared base's
+        # repeated-poll dwell loop detect that a fresh drain produced a hit
+        # (so it can stop early — see SweepController._run_step).
+        self._hits = 0
+
+    @property
+    def hits(self) -> int:
+        """Total answered polls recorded so far (new record OR repeat poll)."""
+        return self._hits
 
     def _hit(self, addr: str, step: SweepStep, timestamp: float,
              distance_cm: int | None = None, rssi: float | None = None) -> None:
+        self._hits += 1
         key = (addr, step.channel, step.pcode)
         d = self._polls.get(key)
         if d is None:
@@ -102,71 +129,17 @@ class TransponderResults:
         return [dict(d) for d in self._polls.values()]
 
 
-class TransponderController:
-    """Start/stop/status controller that answers polls across the PHY space.
+class TransponderController(SweepController):
+    """Cycles the PHY space one combo at a time, answering polls with ``respf``.
 
-    Takes an already-detected :class:`~uwb_explorer.device.Device` and an
-    injected ``now`` clock; cycling is driven a combo at a time (the first on
-    :meth:`start`, each subsequent on :meth:`step`) so no threads or sleeps are
-    needed.
+    See :class:`~uwb_explorer.experiments.sweep.SweepController` for the shared
+    start/step/stop/status skeleton (including the repeated-poll dwell and
+    running-clears-on-exhaustion behavior); this subclass supplies only the
+    transponder-specific hooks.
     """
 
-    def __init__(self, device, now=time.monotonic):
-        self._device = device
-        self._now = now
-        self._plan: list[SweepStep] = []
-        self._results = TransponderResults()
-        self._index = 0
-        self._running = False
+    _results_cls = TransponderResults
+    _results_key = "answered"
 
-    @staticmethod
-    def _parse_csv(value: str | None, default: tuple[int, ...]) -> tuple[int, ...]:
-        # List values may arrive comma-separated (from a direct caller) or with
-        # ";" as the sub-delimiter (the wire form — see docs/EXPERIMENTS.md —
-        # because control.py reserves "," for the key=value pair separator).
-        if not value or not value.strip():
-            return default
-        return tuple(
-            int(tok) for tok in re.split(r"[,;]", value) if tok.strip()
-        )
-
-    def _run_step(self, step: SweepStep) -> None:
-        ch, pc = step.channel, step.pcode
-        self._device.set_uwbcfg(CHAN=ch, TXCODE=pc, RXCODE=pc)
-        # drop the board's config-set "ok" so it can't be miscounted as an
-        # answered poll on the respf we are about to start
-        self._device.session.flush_input()
+    def _start_ranging(self, ch: int, pc: int) -> None:
         self._device.start_respf(CHAN=ch, PCODE=pc)
-        for ev in self._device.poll_events():
-            self._results.record(step, ev, self._now())
-
-    def start(self, args: dict) -> None:
-        channels = self._parse_csv(args.get("channels"), DEFAULT_CHANNELS)
-        pcodes = self._parse_csv(args.get("pcodes"), DEFAULT_PCODES)
-        self._plan = config_plan(channels, pcodes)
-        self._results = TransponderResults()
-        self._index = 0
-        self._running = True
-        if self._plan:
-            self._run_step(self._plan[0])
-            self._index = 1
-
-    def step(self) -> bool:
-        """Drive the next combo; return False (driving nothing) when exhausted."""
-        if self._index >= len(self._plan):
-            return False
-        self._run_step(self._plan[self._index])
-        self._index += 1
-        return True
-
-    def stop(self, args: dict) -> None:
-        self._device.stop()
-        self._running = False
-
-    def status(self, args: dict) -> dict:
-        return {
-            "running": self._running,
-            "total": len(self._plan),
-            "step": self._index,
-            "answered": self._results.to_list(),
-        }

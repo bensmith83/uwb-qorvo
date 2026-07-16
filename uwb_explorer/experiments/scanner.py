@@ -11,37 +11,37 @@ all hardware, threads, and real time are kept OUT of the tested seam:
   * :class:`ScannerController` is a start/stop/status controller (duck-typed
     for :class:`uwb_explorer.experiments.control.Dispatcher`) that drives one
     combo per :meth:`~ScannerController.step` — no threads or sleeps.
+
+The start/step/stop stepping skeleton, the repeated-poll dwell, and the
+running-clears-on-exhaustion behavior all live in the shared
+:class:`~uwb_explorer.experiments.sweep.SweepController` base (bead
+uwb-qorvo-1hu.20) — this module supplies only the scanner-specific hooks: the
+``initf`` ranging role, :class:`ScanResults`, and the ``"devices"`` status key.
 """
 
 from __future__ import annotations
 
-import re
-import time
-from dataclasses import dataclass
-
 from uwb_explorer.parser import Ack, ListenerFrame, RangingResult
+
+from uwb_explorer.experiments.sweep import (
+    DEFAULT_CHANNELS,
+    DEFAULT_PCODES,
+    SweepController,
+    SweepStep,
+    sweep_plan,
+)
+
+__all__ = [
+    "DEFAULT_CHANNELS",
+    "DEFAULT_PCODES",
+    "ScanResults",
+    "ScannerController",
+    "SweepStep",
+    "sweep_plan",
+]
 
 # range-entry statuses that count as a successful reply to our poll
 _OK_STATUSES = {"Ok", "SUCCESS"}
-
-DEFAULT_CHANNELS = (5, 9)
-DEFAULT_PCODES = (9, 10, 11, 12)
-
-
-@dataclass
-class SweepStep:
-    """One PHY combo to probe: a channel and a preamble code."""
-
-    channel: int
-    pcode: int
-
-
-def sweep_plan(
-    channels: tuple[int, ...] = DEFAULT_CHANNELS,
-    pcodes: tuple[int, ...] = DEFAULT_PCODES,
-) -> list[SweepStep]:
-    """Cartesian product of channels x pcodes, channel outer / pcode inner."""
-    return [SweepStep(channel=ch, pcode=pc) for ch in channels for pc in pcodes]
 
 
 class ScanResults:
@@ -54,8 +54,9 @@ class ScanResults:
     def __init__(self):
         # (addr, channel, pcode) -> discovery dict
         self._devices: dict[tuple[str, int, int], dict] = {}
-        # monotonic count of OK replies folded in; lets a poller detect that a
-        # fresh drain produced a hit (so it can stop early — see _run_step).
+        # monotonic count of OK replies folded in; lets the shared base's
+        # repeated-poll dwell loop detect that a fresh drain produced a hit
+        # (so it can stop early — see SweepController._run_step).
         self._hits = 0
 
     @property
@@ -102,109 +103,17 @@ class ScanResults:
         return [dict(d) for d in self._devices.values()]
 
 
-class ScannerController:
-    """Start/stop/status controller that sweeps the PHY space one combo at a time.
+class ScannerController(SweepController):
+    """Sweeps the PHY space one combo at a time, actively polling with ``initf``.
 
-    Takes an already-detected :class:`~uwb_explorer.device.Device` and an
-    injected ``now`` clock; sweeping is driven a combo at a time (the first on
-    :meth:`start`, each subsequent on :meth:`step`) so no threads or sleeps are
-    needed.
+    See :class:`~uwb_explorer.experiments.sweep.SweepController` for the shared
+    start/step/stop/status skeleton (including the repeated-poll dwell and
+    running-clears-on-exhaustion behavior); this subclass supplies only the
+    scanner-specific hooks.
     """
 
-    def __init__(self, device, now=time.monotonic, sleep=time.sleep, dwell=1.0,
-                 poll_slices=5):
-        self._device = device
-        self._now = now
-        # after firing `initf` a combo must DWELL before draining: on hardware a
-        # responder's ranging blocks arrive ~200ms later (every ranging period),
-        # so an immediate poll sees nothing. `sleep`/`dwell` are injected so the
-        # tests stay instant (dwell=0 or a no-op sleep) while hardware waits ~1s.
-        self._sleep = sleep
-        self._dwell = dwell
-        # the dwell is spent as several short sub-poll slices, draining after
-        # each, so a reply that lands PART-WAY through the window is caught (bug
-        # 4hg: the first combo's ranging block arrives a few hundred ms after
-        # initf, and a single sleep-then-drain missed it while every re-polled
-        # later combo discovered fine). >=1 slice; each is dwell/poll_slices.
-        self._poll_slices = max(1, int(poll_slices))
-        self._plan: list[SweepStep] = []
-        self._results = ScanResults()
-        self._index = 0
-        self._running = False
-        self._channels: tuple[int, ...] = DEFAULT_CHANNELS
-        self._pcodes: tuple[int, ...] = DEFAULT_PCODES
+    _results_cls = ScanResults
+    _results_key = "devices"
 
-    @staticmethod
-    def _parse_csv(value: str | None, default: tuple[int, ...]) -> tuple[int, ...]:
-        # List values may arrive comma-separated (from a direct caller) or with
-        # ";" as the sub-delimiter (the wire form — see docs/EXPERIMENTS.md —
-        # because control.py reserves "," for the key=value pair separator).
-        if not value or not value.strip():
-            return default
-        return tuple(
-            int(tok) for tok in re.split(r"[,;]", value) if tok.strip()
-        )
-
-    def _run_step(self, step: SweepStep) -> None:
-        ch, pc = step.channel, step.pcode
-        self._device.set_uwbcfg(CHAN=ch, TXCODE=pc, RXCODE=pc)
-        # drop the board's config-set "ok" so it can't be miscounted as a
-        # reply to the poll we are about to send
-        self._device.session.flush_input()
+    def _start_ranging(self, ch: int, pc: int) -> None:
         self._device.start_initf(CHAN=ch, PCODE=pc)
-        # Spend the dwell budget as several short sub-poll slices, draining after
-        # each: on hardware a responder's ranging blocks arrive ~200ms after
-        # initf (and every ranging period after), so a single sleep-then-drain
-        # can miss the reply — especially on the very FIRST combo (bug 4hg).
-        # Poll repeatedly until a hit is recorded OR the budget is exhausted.
-        hits_before = self._results.hits
-        slice_dwell = self._dwell / self._poll_slices
-        for _ in range(self._poll_slices):
-            self._sleep(slice_dwell)
-            for ev in self._device.poll_events():
-                self._results.record(step, ev, self._now())
-            if self._results.hits > hits_before:
-                break  # got a reply on this combo — no need to burn the rest
-
-    def start(self, args: dict) -> None:
-        self._channels = self._parse_csv(args.get("channels"), DEFAULT_CHANNELS)
-        self._pcodes = self._parse_csv(args.get("pcodes"), DEFAULT_PCODES)
-        self._plan = sweep_plan(self._channels, self._pcodes)
-        self._results = ScanResults()
-        self._index = 0
-        self._running = True
-        if self._plan:
-            self._run_step(self._plan[0])
-            self._index = 1
-
-    def step(self) -> bool:
-        """Drive the next combo; return False (driving nothing) when exhausted.
-
-        On exhaustion the sweep is DONE, so clear ``_running`` (bug 09r): the
-        pump handoff keys off this to release the port arbiter and resume the
-        passive listener, with no explicit stop needed.
-        """
-        if self._index >= len(self._plan):
-            self._running = False
-            return False
-        self._run_step(self._plan[self._index])
-        self._index += 1
-        return True
-
-    def stop(self, args: dict) -> None:
-        self._device.stop()
-        self._running = False
-
-    def status(self, args: dict) -> dict:
-        # "running" reflects DONE once every combo has been driven (bug 09r):
-        # the flag alone stayed True forever after a natural exhaustion (only
-        # stop() cleared it), so report running only while combos remain.
-        running = self._running and self._index < len(self._plan)
-        return {
-            "running": running,
-            "total": len(self._plan),
-            "step": self._index,
-            "channels": list(self._channels),
-            "pcodes": list(self._pcodes),
-            "devices": self._results.to_list(),
-        }

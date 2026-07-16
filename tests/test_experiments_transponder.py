@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from uwb_explorer.parser import Ack, ListenerFrame, RangeEntry, RangingResult
 from tests.test_device import UWBCFG_REPLY, make_device, make_scripted
 
@@ -175,7 +177,11 @@ def _fixed_clock(t=1000.0):
 def test_start_configures_the_first_combo_and_answers():
     # set_uwbcfg needs the board to answer the uwbcfg query
     dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = TransponderController(dev, now=_fixed_clock())
+    # dwell=0: this test only cares about wiring, not the dwell/repeated-poll
+    # behavior (see the dedicated dwell tests below) — dwell=0 keeps it
+    # instant now that dwell is a real injected parameter (shared base,
+    # bead 1hu.20), same convention the scanner tests already use.
+    ctrl = TransponderController(dev, now=_fixed_clock(), dwell=0)
     ctrl.start({})  # defaults -> first combo is channel 5, pcode 9
 
     tx = bytes(ser.tx)
@@ -189,7 +195,7 @@ def test_start_does_not_invent_a_phantom_from_the_config_ok():
     # must be FLUSHED before respf, so poll_events can't miscount it as an
     # answered poll -> the report stays empty.
     dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = TransponderController(dev, now=_fixed_clock())
+    ctrl = TransponderController(dev, now=_fixed_clock(), dwell=0)
     ctrl.start({})
 
     assert ctrl.status({})["answered"] == []
@@ -198,7 +204,7 @@ def test_start_does_not_invent_a_phantom_from_the_config_ok():
 def test_start_records_an_answered_poll_into_status():
     # board answers the uwbcfg query, and an initiator polls us on respf
     dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY, "respf": RESPF_REPLY})
-    ctrl = TransponderController(dev, now=_fixed_clock(1000.0))
+    ctrl = TransponderController(dev, now=_fixed_clock(1000.0), dwell=0)
     ctrl.start({})
 
     answered = ctrl.status({})["answered"]
@@ -223,7 +229,7 @@ def test_stop_sends_stop_and_leaves_the_device_idle():
 
 def test_status_reports_progress_and_a_jsonable_snapshot():
     dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = TransponderController(dev, now=_fixed_clock())
+    ctrl = TransponderController(dev, now=_fixed_clock(), dwell=0)
     ctrl.start({})
 
     st = ctrl.status({})
@@ -236,7 +242,7 @@ def test_status_reports_progress_and_a_jsonable_snapshot():
 
 def test_blank_args_use_defaults_and_custom_args_are_honored():
     dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = TransponderController(dev, now=_fixed_clock())
+    ctrl = TransponderController(dev, now=_fixed_clock(), dwell=0)
 
     ctrl.start({})  # blank -> channels 5/9, pcodes 9-12
     assert ctrl.status({})["total"] == 8
@@ -248,7 +254,7 @@ def test_blank_args_use_defaults_and_custom_args_are_honored():
 
 def test_step_drives_the_next_combo_without_threads():
     dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
-    ctrl = TransponderController(dev, now=_fixed_clock())
+    ctrl = TransponderController(dev, now=_fixed_clock(), dwell=0)
     # two combos: (5, 9) then (9, 9)
     ctrl.start({"channels": "5,9", "pcodes": "9"})  # drives the first, (5, 9)
 
@@ -258,3 +264,88 @@ def test_step_drives_the_next_combo_without_threads():
     assert b"respf -CHAN=9 -PCODE=9" in tx
 
     assert ctrl.step() is False  # cycle exhausted
+
+
+# ---- repeated-poll dwell (bug uwb-qorvo-4hg), ported from the scanner ------
+# The transponder previously did a single drain with no dwell at all. Under
+# the shared SweepController base (bead 1hu.20) it now dwells the same way
+# the (hardware-validated) scanner does: the budget is spent as several short
+# sub-poll slices, draining after each and stopping early on a fresh hit. This
+# is a behavior IMPROVEMENT, not a regression — a late-arriving initiator poll
+# that used to be missed on the very first combo is now caught.
+
+def test_run_step_dwells_after_respf_so_late_replies_are_captured():
+    # On hardware an initiator's poll can arrive AFTER respf has started, so a
+    # cycle that drains immediately can see nothing. The step MUST dwell
+    # before polling. Model that: the poll is delivered ONLY when the
+    # injected sleep (the dwell) fires — with no dwell, no answered record.
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})  # NOTE: no respf reply
+    def dwell_delivers(_secs):
+        ser.feed(RESPF_REPLY)  # the initiator polls during the dwell window
+    ctrl = TransponderController(dev, now=_fixed_clock(1000.0),
+                                  sleep=dwell_delivers, dwell=0.5)
+    ctrl.start({"channels": "9", "pcodes": "9"})
+
+    answered = ctrl.status({})["answered"]
+    assert len(answered) == 1
+    assert answered[0]["addr"] == "0x00AB"
+    assert answered[0]["channel"] == 9
+
+
+def test_run_step_sleeps_for_the_configured_dwell():
+    dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    slept: list[float] = []
+    ctrl = TransponderController(dev, now=_fixed_clock(),
+                                  sleep=lambda s: slept.append(s), dwell=0.75)
+    ctrl.start({"channels": "9", "pcodes": "9"})
+    # the dwell budget is spent across several short sub-poll slices (bug
+    # 4hg, ported from the scanner), so assert the TOTAL slept equals the
+    # configured dwell, not that a single 0.75s sleep happened. No poll
+    # lands, so every slice is used.
+    assert sum(slept) == pytest.approx(0.75)
+
+    assert ctrl.step() is False  # cycle exhausted
+
+
+def test_first_combo_late_reply_is_captured_by_repeated_polling():
+    # Mirrors bug uwb-qorvo-4hg for the transponder: the FIRST combo (the one
+    # run synchronously inside start()) must repeatedly drain poll_events()
+    # across the dwell budget, not just once. Model an initiator that only
+    # polls after a few sub-poll slices: the poll is fed on the 3rd slice, so
+    # a lone drain sees nothing while repeated draining captures it.
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})  # NOTE: no respf reply
+    calls = {"n": 0}
+
+    def late_reply(_secs):
+        calls["n"] += 1
+        if calls["n"] == 3:            # answers only after a couple sub-polls
+            ser.feed(RESPF_REPLY)
+
+    ctrl = TransponderController(dev, now=_fixed_clock(1000.0),
+                                  sleep=late_reply, dwell=0.5)
+    ctrl.start({"channels": "9", "pcodes": "9"})  # single combo == the first
+
+    answered = ctrl.status({})["answered"]
+    assert len(answered) == 1
+    assert answered[0]["addr"] == "0x00AB"
+    assert answered[0]["channel"] == 9
+
+
+# ---- running-clears-on-exhaustion (bug uwb-qorvo-09r), ported from the -----
+# ---- scanner ----------------------------------------------------------------
+
+def test_running_clears_when_the_cycle_is_exhausted():
+    # Previously status()['running'] stayed True forever after the cycle
+    # exhausted (only stop() cleared it). Under the shared base (bead 1hu.20)
+    # this is fixed for the transponder too: once every combo has been
+    # driven (index >= total) the cycle is DONE and running must report False
+    # WITHOUT an explicit stop — so the port-arbiter pump handoff resumes the
+    # passive listener on natural completion.
+    dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    ctrl = TransponderController(dev, now=_fixed_clock(), dwell=0)
+    ctrl.start({"channels": "5,9", "pcodes": "9"})   # two combos, first driven
+    assert ctrl.status({})["running"] is True        # combo 2 still pending
+
+    assert ctrl.step() is True    # drive combo 2 (now index == total)
+    assert ctrl.step() is False   # exhausted
+    assert ctrl.status({})["running"] is False
