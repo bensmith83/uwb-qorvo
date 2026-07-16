@@ -218,3 +218,20 @@ def test_tcfm_count_and_interval_positional():
     dev.tcfm(count=100, interval=5)
     assert b"tcfm 100 5\r\n" in bytes(ser.tx)
     assert dev.mode == "TCFM"
+
+
+def test_set_antenna_delay_sends_antdelay_command_with_ticks_for_tx_and_rx():
+    # Antenna delay is a separate IDLE-only config command, not part of
+    # UWBCFG's 13-param list (see _UWBCFG_ORDER / docs/cli-protocol.md §2).
+    # Convention: a single calibrated tick value is programmed into both
+    # the TX and RX antenna-delay registers (see uwb_explorer/calibration.py
+    # module docstring) — so the command carries the value twice.
+    dev, ser = make_device()
+    dev.set_antenna_delay(16449)
+    assert bytes(ser.tx) == b"antdelay 16449 16449\r\n"
+
+
+def test_set_antenna_delay_accepts_negative_correction():
+    dev, ser = make_device()
+    dev.set_antenna_delay(16321)
+    assert bytes(ser.tx) == b"antdelay 16321 16321\r\n"

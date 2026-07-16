@@ -131,6 +131,26 @@ class Device:
             self.session.send("tcfm")
         self.mode = "TCFM"
 
+    def set_antenna_delay(self, ticks: int) -> None:
+        """Program the antenna-delay registers with a calibrated tick value.
+
+        `ticks` is a DW3000 device-time-unit value (~15.65 ps/tick), as
+        produced by uwb_explorer.calibration.calibrate(). Antenna delay is
+        NOT one of UWBCFG's 13 params (see _UWBCFG_ORDER) — it is a
+        separate IDLE-only config command, analogous to TXPOWER/ANTENNA in
+        docs/cli-protocol.md §2. Following the standard Qorvo/DecaWave
+        convention, the same calibrated value is programmed into both the
+        TX and RX antenna-delay registers (see calibration.py's module
+        docstring for why), hence `ticks` appears twice on the wire.
+
+        NOTE: the exact `ANTDELAY <tx> <rx>` command name/argument order
+        used here was not confirmed against a live board's `HELP` output
+        (see bead uwb-qorvo-av8) — verify with `HELP ANTDELAY` on real
+        hardware before relying on this in tools/calibrate_antenna_delay.py,
+        and adjust the format string below if the firmware differs.
+        """
+        self.session.send(f"antdelay {ticks} {ticks}")
+
     def poll_events(self) -> Iterator[Event]:
         """Drain complete lines currently buffered; yield parsed events."""
         pending: list[str] = []
