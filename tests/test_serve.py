@@ -75,12 +75,13 @@ def test_scanner_letter_is_the_real_controller_not_a_placeholder():
 
 
 def test_placeholder_letters_still_dispatch_without_crashing():
-    # B/Z have no real controller yet; the placeholder must answer so the web
-    # hub stays fully wired and nothing crashes when those letters are driven.
-    # (T is now the REAL transponder — see the transponder tests below.)
+    # Z has no real controller yet; the placeholder must answer so the web hub
+    # stays fully wired and nothing crashes when it is driven.
+    # (T is now the REAL transponder, B is now the REAL beacon — see the
+    # transponder/beacon tests below.)
     dev, _ = make_device()
     disp = _build(dev)
-    for letter in ("B", "Z"):
+    for letter in ("Z",):
         started = disp.dispatch(parse_command(f"X{letter}1"))
         status = disp.dispatch(parse_command(f"X{letter}?"))
         assert isinstance(started, dict)
@@ -142,3 +143,85 @@ def test_scanner_stays_real_alongside_the_transponder():
     t_st = disp.dispatch(parse_command("XT?"))
     assert "phase" not in s_st and s_st["running"] is True   # scanner still real
     assert "phase" not in t_st and t_st["running"] is True   # transponder real
+
+
+# --- beacon web view (bead uwb-qorvo-1hu.11) ---------------------------------
+# Mirrors the scanner/transponder wiring above: build_dispatcher must register a
+# REAL BeaconController on letter "B" (bead 1hu.11 ships it), not a placeholder.
+# The beacon is a periodic fixed-frame TX beacon on stock firmware's TCFM — no
+# ranging role and no PHY sweep, just one fixed combo — so unlike scanner/
+# transponder it has no "total"/"step"/devices-list; "running" plus the
+# configured channel/pcode/interval is the whole status shape.
+# SCOPE GUARD: the live board-loop pause/resume handoff (half-duplex arbitration
+# while the beacon actively transmits on the shared serial port) needs real
+# hardware and is a deliberate follow-up — NOT exercised here.
+
+
+def test_dispatch_xb1_drives_the_real_beacon():
+    # the board answers the uwbcfg query so set_uwbcfg can rewrite the PHY combo
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    disp = _build(dev)
+    disp.dispatch(parse_command("XB1"))   # start beacon -> configures + fires tcfm
+    tx = bytes(ser.tx)
+    assert b"uwbcfg" in tx   # PHY reconfigured for the beacon's combo
+    assert b"tcfm" in tx     # begins the periodic fixed-frame TX beacon
+
+
+def test_dispatch_xb_status_returns_the_beacon_status_dict():
+    dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    disp = _build(dev)
+    disp.dispatch(parse_command("XB1"))
+    st = disp.dispatch(parse_command("XB?"))
+    for key in ("running", "channel", "pcode", "interval"):
+        assert key in st
+    assert st["running"] is True
+    json.dumps(st)   # JSON-able for the web status endpoint
+
+
+def test_beacon_letter_is_the_real_controller_not_a_placeholder():
+    # the placeholder's status is {"exp":..., "phase":"unimplemented"}; the real
+    # beacon reports concrete channel/pcode/interval config instead.
+    dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    disp = _build(dev)
+    disp.dispatch(parse_command("XB1"))
+    st = disp.dispatch(parse_command("XB?"))
+    assert "phase" not in st
+    assert "channel" in st
+    assert st["running"] is True
+
+
+def test_dispatch_xb1_honors_channel_pcode_and_interval_args():
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    disp = _build(dev)
+    disp.dispatch(parse_command("XB1 channel=9,pcode=12,interval=2.5"))
+    st = disp.dispatch(parse_command("XB?"))
+    assert st["channel"] == 9
+    assert st["pcode"] == 12
+    assert st["interval"] == 2.5
+    assert b"uwbcfg 9 " in bytes(ser.tx)
+
+
+def test_dispatch_xb0_stops_the_beacon():
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    disp = _build(dev)
+    disp.dispatch(parse_command("XB1"))
+    disp.dispatch(parse_command("XB0"))
+    assert b"stop\r\n" in bytes(ser.tx)
+    st = disp.dispatch(parse_command("XB?"))
+    assert st["running"] is False
+
+
+def test_scanner_and_transponder_stay_real_alongside_the_beacon():
+    # wiring the real beacon must NOT regress the already-shipped scanner/
+    # transponder: S still sweeps, T still answers, B now really beacons too.
+    dev, _ = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    disp = _build(dev)
+    disp.dispatch(parse_command("XS1"))
+    s_st = disp.dispatch(parse_command("XS?"))
+    disp.dispatch(parse_command("XT1"))
+    t_st = disp.dispatch(parse_command("XT?"))
+    disp.dispatch(parse_command("XB1"))
+    b_st = disp.dispatch(parse_command("XB?"))
+    assert "phase" not in s_st and s_st["running"] is True   # scanner still real
+    assert "phase" not in t_st and t_st["running"] is True   # transponder real
+    assert "phase" not in b_st and b_st["running"] is True   # beacon now real
