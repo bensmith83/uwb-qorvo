@@ -431,6 +431,26 @@ def test_pump_advances_the_active_steppable_after_start():
     assert ctrl.steps == 3
 
 
+def test_pump_resumes_the_arbiter_on_natural_completion():
+    # BUG uwb-qorvo-09r: when the pumped sweep EXHAUSTS on its own, the arbiter
+    # must be RESUMED so the board's passive listener comes back automatically —
+    # without needing an explicit XS0. Previously pump() cleared its target on
+    # exhaustion but left the arbiter paused, wedging the listener off the port
+    # forever. Using the REAL arbiter: a start pauses it, and the final (empty)
+    # pump releases it.
+    from uwb_explorer.experiments.arbiter import PortArbiter, ArbitratedDispatcher
+    arb = PortArbiter()
+    ctrl = _SteppableController()
+    wrapped = ArbitratedDispatcher(_SteppableInner(ctrl), arb)
+
+    wrapped.dispatch(parse_command("XS1"))     # start pauses the arbiter
+    assert arb.is_active() is True
+    assert wrapped.pump() is True              # step 1 (more remains)
+    assert wrapped.pump() is True              # step 2
+    assert wrapped.pump() is False             # exhausted -> stop pumping
+    assert arb.is_active() is False            # listener released automatically
+
+
 def test_pump_is_a_noop_before_any_start():
     from uwb_explorer.experiments.arbiter import PortArbiter, ArbitratedDispatcher
     arb = PortArbiter()

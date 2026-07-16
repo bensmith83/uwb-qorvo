@@ -54,9 +54,18 @@ class ScanResults:
     def __init__(self):
         # (addr, channel, pcode) -> discovery dict
         self._devices: dict[tuple[str, int, int], dict] = {}
+        # monotonic count of OK replies folded in; lets a poller detect that a
+        # fresh drain produced a hit (so it can stop early — see _run_step).
+        self._hits = 0
+
+    @property
+    def hits(self) -> int:
+        """Total OK replies recorded so far (new device OR repeat reply)."""
+        return self._hits
 
     def _hit(self, addr: str, step: SweepStep, timestamp: float,
              rssi: float | None = None) -> None:
+        self._hits += 1
         key = (addr, step.channel, step.pcode)
         d = self._devices.get(key)
         if d is None:
@@ -102,7 +111,8 @@ class ScannerController:
     needed.
     """
 
-    def __init__(self, device, now=time.monotonic, sleep=time.sleep, dwell=1.0):
+    def __init__(self, device, now=time.monotonic, sleep=time.sleep, dwell=1.0,
+                 poll_slices=5):
         self._device = device
         self._now = now
         # after firing `initf` a combo must DWELL before draining: on hardware a
@@ -111,6 +121,12 @@ class ScannerController:
         # tests stay instant (dwell=0 or a no-op sleep) while hardware waits ~1s.
         self._sleep = sleep
         self._dwell = dwell
+        # the dwell is spent as several short sub-poll slices, draining after
+        # each, so a reply that lands PART-WAY through the window is caught (bug
+        # 4hg: the first combo's ranging block arrives a few hundred ms after
+        # initf, and a single sleep-then-drain missed it while every re-polled
+        # later combo discovered fine). >=1 slice; each is dwell/poll_slices.
+        self._poll_slices = max(1, int(poll_slices))
         self._plan: list[SweepStep] = []
         self._results = ScanResults()
         self._index = 0
@@ -136,11 +152,19 @@ class ScannerController:
         # reply to the poll we are about to send
         self._device.session.flush_input()
         self._device.start_initf(CHAN=ch, PCODE=pc)
-        # dwell so a responder on this combo has time to answer before we drain
-        # (its ranging blocks arrive one ranging-period later, not instantly)
-        self._sleep(self._dwell)
-        for ev in self._device.poll_events():
-            self._results.record(step, ev, self._now())
+        # Spend the dwell budget as several short sub-poll slices, draining after
+        # each: on hardware a responder's ranging blocks arrive ~200ms after
+        # initf (and every ranging period after), so a single sleep-then-drain
+        # can miss the reply — especially on the very FIRST combo (bug 4hg).
+        # Poll repeatedly until a hit is recorded OR the budget is exhausted.
+        hits_before = self._results.hits
+        slice_dwell = self._dwell / self._poll_slices
+        for _ in range(self._poll_slices):
+            self._sleep(slice_dwell)
+            for ev in self._device.poll_events():
+                self._results.record(step, ev, self._now())
+            if self._results.hits > hits_before:
+                break  # got a reply on this combo — no need to burn the rest
 
     def start(self, args: dict) -> None:
         self._channels = self._parse_csv(args.get("channels"), DEFAULT_CHANNELS)
@@ -154,8 +178,14 @@ class ScannerController:
             self._index = 1
 
     def step(self) -> bool:
-        """Drive the next combo; return False (driving nothing) when exhausted."""
+        """Drive the next combo; return False (driving nothing) when exhausted.
+
+        On exhaustion the sweep is DONE, so clear ``_running`` (bug 09r): the
+        pump handoff keys off this to release the port arbiter and resume the
+        passive listener, with no explicit stop needed.
+        """
         if self._index >= len(self._plan):
+            self._running = False
             return False
         self._run_step(self._plan[self._index])
         self._index += 1
@@ -166,8 +196,12 @@ class ScannerController:
         self._running = False
 
     def status(self, args: dict) -> dict:
+        # "running" reflects DONE once every combo has been driven (bug 09r):
+        # the flag alone stayed True forever after a natural exhaustion (only
+        # stop() cleared it), so report running only while combos remain.
+        running = self._running and self._index < len(self._plan)
         return {
-            "running": self._running,
+            "running": running,
             "total": len(self._plan),
             "step": self._index,
             "channels": list(self._channels),
