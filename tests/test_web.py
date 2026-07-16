@@ -12,7 +12,10 @@ import threading
 import urllib.error
 import urllib.request
 
-from uwb_explorer.experiments.control import Dispatcher
+import uwb_explorer.device as devmod
+import uwb_explorer.serialport as sp
+import uwb_explorer.web as webmod
+from uwb_explorer.experiments.control import Dispatcher, parse_command
 from uwb_explorer.web import DashboardServer, poll_once
 from uwb_explorer.webmodel import DetectorState
 
@@ -307,3 +310,133 @@ def test_experiment_status_reflects_running_experiment():
         assert json.loads(body)["running"] is None
     finally:
         srv.shutdown()
+
+
+# --- mid-experiment board re-enumeration recovery (bead uwb-qorvo-0ux) --------
+# When the board USB-disconnects and re-enumerates WHILE an experiment is active
+# (arbiter active, mid-pump), a serial exception fires inside board_loop. The
+# recovery path must RELEASE the arbiter and clear the quiesce handoff so the
+# rebuilt dispatcher and the passive listener start from a clean slate — a stale
+# active arbiter would wedge the listener off the port until an explicit stop.
+# board_loop is hardware-bound, so we drive it with fake serial/device seams and
+# a pump that raises (the re-enumeration), asserting on the arbiter it consults.
+
+
+class _FakeSerial:
+    def setDTR(self, v):
+        pass
+
+    def reset_input_buffer(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class _FakeDevice:
+    """Minimal board double: detects, reports a config, no-ops the listener."""
+
+    def __init__(self, ser):
+        pass
+
+    def detect(self):
+        return True
+
+    def get_uwbcfg(self):
+        return {"CHAN": 9, "TXCODE": 9}
+
+    def stop(self):
+        pass
+
+    def start_listener(self):
+        pass
+
+
+def _patch_board_hw(monkeypatch):
+    monkeypatch.setattr(sp, "find_cli_port", lambda: "/dev/fake")
+    monkeypatch.setattr(sp, "open_cli", lambda port: _FakeSerial())
+    monkeypatch.setattr(devmod, "Device", _FakeDevice)
+
+
+def test_board_loop_releases_arbiter_when_pump_raises_mid_experiment(monkeypatch):
+    from uwb_explorer.experiments.arbiter import PortArbiter
+
+    _patch_board_hw(monkeypatch)
+    arb = PortArbiter()
+    arb.pause()                    # an experiment holds the port when we enter
+
+    stop = threading.Event()
+
+    def boom():
+        # the board re-enumerated mid-experiment: the pump hits a serial error.
+        # Set stop so the loop exits after ONE recovery instead of reconnecting
+        # forever, then raise the way a wedged serial port would.
+        stop.set()
+        raise OSError("serial disconnected mid-experiment")
+
+    state = DetectorState()
+    webmod.board_loop(state, stop, interval=0.0, arbiter=arb, pump=boom)
+
+    # the re-enumeration must leave the arbiter RELEASED and the handoff cleared,
+    # so the rebuilt dispatcher and the passive listener start fresh.
+    assert arb.is_active() is False
+    assert arb.wait_quiesced(0.0) is True
+    assert state.snapshot()["status"] == "error"
+
+
+def test_recover_arbitration_resets_handoff_and_allows_fresh_experiment():
+    # After a mid-experiment re-enumeration the arbiter can be left ACTIVE with a
+    # half-armed quiesce wait. recover_arbitration must reset it so a subsequent
+    # reconnect can start a fresh experiment cleanly.
+    from uwb_explorer.experiments.arbiter import PortArbiter, ArbitratedDispatcher
+
+    arb = PortArbiter()
+    arb.set_listener_running(True)
+    arb.pause()                    # active, and (listener up) quiesce disarmed
+    assert arb.is_active() is True
+    assert arb.wait_quiesced(0.0) is False   # wedged mid-handoff
+
+    webmod.recover_arbitration(arb)
+
+    assert arb.is_active() is False           # released
+    assert arb.wait_quiesced(0.0) is True     # handoff cleared
+    # a fresh pause must NOT re-arm the quiesce wait (listener_running reset),
+    # i.e. the reconnect starts from a clean slate.
+    arb.pause()
+    assert arb.wait_quiesced(0.0) is True
+    arb.resume()
+
+    # and a brand-new experiment starts + pumps normally on the same arbiter.
+    class _Ctrl:
+        def __init__(self):
+            self.steps = 0
+
+        def start(self, args):
+            return {"ok": True}
+
+        def step(self):
+            self.steps += 1
+            return self.steps < 2
+
+    class _Inner:
+        def __init__(self, c):
+            self._c = c
+
+        def dispatch(self, cmd):
+            return getattr(self._c, cmd.action)(cmd.args)
+
+        def controller_for(self, exp):
+            return self._c
+
+    ctrl = _Ctrl()
+    wrapped = ArbitratedDispatcher(_Inner(ctrl), arb)
+    wrapped.dispatch(parse_command("XS1"))
+    assert arb.is_active() is True
+    assert wrapped.pump() is True
+    assert wrapped.pump() is False            # exhausts and releases cleanly
+    assert arb.is_active() is False
+
+
+def test_recover_arbitration_is_a_noop_when_arbiter_is_none():
+    # board_loop may run without arbitration configured; recovery must be safe.
+    webmod.recover_arbitration(None)   # must not raise

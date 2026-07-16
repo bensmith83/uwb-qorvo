@@ -141,6 +141,26 @@ class DashboardServer:
         return Handler
 
 
+def recover_arbitration(arbiter) -> None:
+    """Reset port arbitration to a clean slate after a serial error mid-loop.
+
+    A board that USB re-enumerates DURING an active experiment throws a serial
+    exception out of the pump/poll while the arbiter is still ACTIVE and its
+    quiesce handshake is half-armed. Left as-is, the rebuilt dispatcher and the
+    passive listener would stay wedged off the port (``is_active()`` still True)
+    until an explicit stop. Releasing here lets the reconnect start fresh: the
+    active flag is cleared, the listener is marked down (its device is gone), and
+    the quiesce wait is fired so a subsequent start doesn't block on a handshake
+    that will never complete. Idempotent and safe when ``arbiter`` is None or
+    already inactive; only touches the arbiter, so ``web`` needs no import of it.
+    """
+    if arbiter is None:
+        return
+    arbiter.resume()                     # deactivate a wedged-active arbiter
+    arbiter.set_listener_running(False)  # our listener is down; device is gone
+    arbiter.mark_quiesced()              # clear any half-armed quiesce wait
+
+
 def board_loop(state: DetectorState, stop: threading.Event,
                sweep: bool = False, interval: float = 1.0,
                codes=(9, 10, 11, 12), on_connect=None, arbiter=None,
@@ -238,6 +258,11 @@ def board_loop(state: DetectorState, stop: threading.Event,
             ser.close()
         except Exception:  # a serial wedge/reenumerate: back off and reconnect
             state.set_status("error")
+            # If a board re-enumerated mid-experiment the arbiter is still ACTIVE
+            # and its quiesce handshake half-armed; release it so the rebuilt
+            # dispatcher and the passive listener resume from a clean slate rather
+            # than staying wedged off the port until an explicit stop (bead 0ux).
+            recover_arbitration(arbiter)
             stop.wait(1.5)
         finally:
             if on_connect:
