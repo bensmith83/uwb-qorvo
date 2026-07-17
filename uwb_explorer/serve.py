@@ -21,6 +21,7 @@ from .web import board_loop, DashboardServer
 from .experiments.control import Dispatcher, EXPERIMENTS
 from .experiments.arbiter import PortArbiter, ArbitratedDispatcher
 from .experiments.beacon import BeaconController
+from .experiments.fuzzer import FuzzerController
 from .experiments.scanner import ScannerController
 from .experiments.transponder import TransponderController
 
@@ -29,9 +30,12 @@ class _PlaceholderController:
     """Provisional stand-in until the real per-experiment controllers land.
 
     Accepts the start/stop/status downlink so the web hub is fully wired now,
-    but does nothing on the board yet. Real controllers arrive in beads
-    .5 (scanner) / .8 (transponder) / .11 (beacon, shipped) / .16 (fuzzer); the
-    half-duplex pause-the-board-loop handoff is refined there too.
+    but does nothing on the board yet. Real controllers shipped in beads
+    .5/.6 (scanner), .8/.9 (transponder), .11 (beacon), and .16 (fuzzer) — see
+    :func:`build_dispatcher`, which registers all four. This class now backs
+    only :func:`_provisional_dispatcher` (used before a board Device exists —
+    see ``_LazyDispatcher``) and ``build_dispatcher``'s safety-net fallback for
+    any future EXPERIMENTS letter added before its controller lands.
     """
 
     def __init__(self, exp: str):
@@ -53,21 +57,26 @@ def _provisional_dispatcher() -> Dispatcher:
 
 
 def build_dispatcher(device) -> Dispatcher:
-    """Wire the REAL scanner + transponder + beacon controllers, placeholder for Z.
+    """Wire the REAL scanner + transponder + beacon + fuzzer controllers.
 
     The scanner (bead .5/.6) drives a live ``ScannerController(device)`` on "S"
     that actively sweeps the PHY space; the transponder (bead .8/.9) drives a
     live ``TransponderController(device)`` on "T" that answers polls across the
     same space; the beacon (bead .11) drives a live ``BeaconController(device)``
     on "B" that transmits a periodic fixed-frame TX beacon via stock firmware's
-    TCFM on one fixed combo. Z keeps the provisional placeholder until its
-    controller lands, so the web hub stays fully wired and no letter crashes
-    when driven.
+    TCFM on one fixed combo; the fuzzer (bead .16) drives a live
+    ``FuzzerController(device)`` on "Z" that fires ONE deliberately-triggered
+    malformed frame (``fuzztx <case_id>``, AUTHORIZED SECURITY-RESEARCH
+    TOOLING — own devices only) and captures any LISTENER-mode reaction. Every
+    known EXPERIMENTS letter is real now; the ``_PlaceholderController`` fallback
+    below is dead code kept only so an unregistered letter never crashes the
+    web hub if EXPERIMENTS grows again before its controller lands.
     """
     registry: dict[str, object] = {
         "S": ScannerController(device),
         "T": TransponderController(device),
         "B": BeaconController(device),
+        "Z": FuzzerController(device),
     }
     for letter in EXPERIMENTS:
         if letter not in registry:

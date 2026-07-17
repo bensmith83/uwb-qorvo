@@ -289,6 +289,71 @@ def test_page_transponder_posts_and_polls_the_experiment_api():
         srv.shutdown()
 
 
+# --- fuzzer experiment UI on the served page (bead uwb-qorvo-1hu.17)
+# Mirrors the scanner/transponder page assertions above: page MARKUP + client
+# wiring only. AUTHORIZED SECURITY-RESEARCH TOOLING: fire fuzz cases only at
+# devices you own / are explicitly authorized to test. The panel carries a
+# PROMINENT, always-visible "authorized targets / own devices only" note, and
+# firing is a single DELIBERATE button — there is no auto-fire path. The live
+# board-loop pause/resume handoff needs real hardware and is a deliberate
+# follow-up, NOT tested here.
+
+def test_page_has_fuzzer_experiment_section():
+    srv = _serve(lambda: {})
+    try:
+        status, body, ctype = _fetch(srv.port, "/")
+        assert status == 200
+        assert "html" in ctype
+        # the experiments section now also exposes a Fuzzer control
+        assert 'id="experiments"' in body
+        assert "Fuzzer" in body
+        # the case picker exposes every catalog case (uwb_explorer.experiments.fuzzer.CASES)
+        for case in ("bad-crc", "invalid-frametype", "oversized-phr",
+                     "truncated-mac", "illegal-sts"):
+            assert case in body
+        # the Fire control sends the fuzzer start opcode, Stop the stop opcode
+        assert "XZ1" in body
+        assert "XZ0" in body
+    finally:
+        srv.shutdown()
+
+
+def test_page_fuzzer_panel_has_the_authorized_targets_note():
+    # a PROMINENT, always-visible ethics/scope note — not gated behind any
+    # toggle or hidden state, since this fires real malformed 802.15.4z frames.
+    srv = _serve(lambda: {})
+    try:
+        _, body, _ = _fetch(srv.port, "/")
+        lowered = body.lower()
+        assert "authorized targets" in lowered
+        assert "own devices only" in lowered
+    finally:
+        srv.shutdown()
+
+
+def test_page_fuzzer_posts_and_polls_the_experiment_api():
+    srv = _serve(lambda: {})
+    try:
+        _, body, _ = _fetch(srv.port, "/")
+        # Fire/Stop are POSTed to the experiment downlink...
+        assert "/api/experiment" in body
+        # ...and the reactions log is polled from the shared status endpoint
+        assert "/api/experiment/status" in body
+        # must stay self-contained (no external requests) for the con hotspot
+        assert "http://" not in body.replace("http://127.0.0.1", "")
+    finally:
+        srv.shutdown()
+
+
+def test_page_fuzzer_renders_a_reactions_log_container():
+    srv = _serve(lambda: {})
+    try:
+        _, body, _ = _fetch(srv.port, "/")
+        assert 'id="fuzzReactions"' in body
+    finally:
+        srv.shutdown()
+
+
 def test_experiment_status_reflects_running_experiment():
     ctl = _RecordingController()
     srv = _serve_ctl(Dispatcher({"S": ctl}))
