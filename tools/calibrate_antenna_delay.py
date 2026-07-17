@@ -24,6 +24,14 @@ What this script does:
      corrected antenna-delay value.
   4. Applies it via Device.set_antenna_delay() and, unless `--no-save`,
      persists it to NVM with SAVE so it survives a power cycle.
+  5. Also persists it host-side, keyed by the board's USB serial (parsed
+     from a by-id port path), via uwb_explorer.antenna_delay_store —
+     uwb_explorer/web.py's board_loop reads this back and auto-re-applies
+     the delay on every future connect (bead uwb-qorvo-av8), independent of
+     whether the board's own NVM SAVE actually took (ANTDELAY's wire
+     behaviour is unconfirmed — see Caveats below). Skipped with a warning
+     if --port/auto-discovery didn't resolve to a by-id path (nothing to
+     key the host-side store on).
 
 Usage
 -----
@@ -74,6 +82,13 @@ Caveats — read before running
 - Keep line-of-sight clear and antenna orientation consistent between runs;
   multipath/NLOS makes individual D_cm samples noisy. Averaging `--samples`
   smooths sample noise but will not fix a bad/reflective placement.
+- Host-side persistence (step 5 above) only works when the resolved serial
+  port is a /dev/serial/by-id/... path (auto-discovery via find_cli_port()
+  normally is NOT — it prefers a bare /dev/ttyACM*). Pin `--port` or
+  UWB_CLI_PORT to the board's by-id path (see `ls /dev/serial/by-id/`) if
+  you want this run's result to auto-apply on future connects; otherwise
+  the script still calibrates+applies to the board this run, it just can't
+  key a host-side cache entry and prints a warning instead of saving one.
 - Does not touch hardware unless you actually run it.
 """
 
@@ -86,6 +101,7 @@ import time
 
 sys.path.insert(0, ".")
 
+from uwb_explorer.antenna_delay_store import save_delay, serial_from_port
 from uwb_explorer.calibration import calibrate, calibrate_two_point
 from uwb_explorer.device import Device
 from uwb_explorer.parser import RangingResult
@@ -214,6 +230,27 @@ def main() -> int:
     else:
         dev.session.send("save")
         print("Saved to NVM (auto-loads on next power-up).")
+
+    # Host-side persistence (bead av8): keyed by the board's USB serial, so
+    # uwb_explorer/web.py's board_loop can auto-re-apply this calibrated
+    # value on every future connect — independent of whether the board's
+    # own NVM SAVE above actually took (ANTDELAY's wire behaviour is still
+    # hardware-unconfirmed, see this file's Caveats).
+    serial = serial_from_port(port)
+    if serial is not None:
+        save_delay(serial, new_delay)
+        print(f"Host-side cache updated (serial {serial}): will auto-apply "
+              "on future connects via board_loop.")
+    else:
+        print(
+            "NOTE: could not derive a USB serial from the resolved port "
+            f"({port!r}) — it isn't a /dev/serial/by-id/... path, so this "
+            "run's result was NOT cached host-side and will NOT auto-apply "
+            "on the next connect. Re-run with --port pointed at the "
+            "board's /dev/serial/by-id/... path (see `ls /dev/serial/by-id/`) "
+            "to enable that.",
+            file=sys.stderr,
+        )
 
     print(
         "\nVerify: range again at a known distance (this script, --dry-run, "
