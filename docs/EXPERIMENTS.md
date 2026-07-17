@@ -93,6 +93,40 @@ The verb name doubles as the controller method the dispatcher calls
 | `X` | nothing after the prefix |
 | `XS1chan=9` | args must be separated from the opcode by a space |
 
+## Fuzzer (`Z`) — malformed-frame emission
+
+> **Ethics & scope.** The fuzzer is **authorized security-research tooling**.
+> It deliberately transmits **malformed IEEE 802.15.4z frames** to probe how a
+> UWB receiver handles non-conformant input. Use it **only on devices you own
+> or are explicitly authorized to test.** Emission is **opcode-triggered
+> only** — the board never radiates a malformed frame on its own. It is keyed
+> either by the experiment opcode **`XZ1`** (fuzzer start) or by the board
+> serial-CLI command **`fuzztx <case_id>`**; each trigger emits exactly **one**
+> frame and then returns to IDLE. The fuzzer is **half-duplex**: the passive
+> LISTENER2 sniffer is paused while the radio is keyed and resumed afterwards.
+
+The `fuzztx <case_id>` CLI command selects one builder from the fuzz-case
+catalog, emits a single malformed frame, and returns to IDLE. The catalog is a
+**shared contract** — the firmware builders (`firmware/ble/fuzzframe.c`), the C
+unit tests (`tests/test_fuzzframe.py`), and the Pi-side `FuzzerController` all
+use the same ids:
+
+| id | case | malformation |
+|---|---|---|
+| `0` | `bad-crc` | well-formed frame whose 2-octet FCS does not match the CRC of the body |
+| `1` | `invalid-frametype` | FCF frame-type field set to `7` (Reserved); FCS otherwise valid |
+| `2` | `oversized-phr` | PHR length field (`200`) larger than the real payload and the legal 127-octet maximum |
+| `3` | `truncated-mac` | FCF declares short dest+src addressing, but the frame is cut off after the sequence number (addressing fields + FCS missing) |
+| `4` | `illegal-sts` | inconsistent STS packet config: SP mode says STS is present (SP2) while the STS length is zero |
+
+Example: `fuzztx 2` transmits one oversized-PHR frame. An unknown or
+out-of-range case id (e.g. `fuzztx 9`) is rejected and nothing is transmitted.
+
+> **On-board TX verification is deferred.** The builders and the
+> build→pause→TX→resume dispatch are covered by host C unit tests; radiated-RF
+> verification on hardware is a later healthy-board task (the boards' RF link
+> is currently degraded).
+
 ## Round-trip guarantee
 
 `format_command` renders a command back to its canonical string: with args it is
