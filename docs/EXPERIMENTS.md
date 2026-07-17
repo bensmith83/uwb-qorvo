@@ -95,13 +95,22 @@ web panel that drives it; every fire is one manual button press mapping to one
 `XZ1`'s optional `case` arg picks a case from the fixed catalog (ordered by
 id — the .15 firmware side, deferred to hardware, uses the same ids):
 
-| id | name |
-|---|---|
-| 0 | `bad-crc` (default) |
-| 1 | `invalid-frametype` |
-| 2 | `oversized-phr` |
-| 3 | `truncated-mac` |
-| 4 | `illegal-sts` |
+The catalog is a **shared contract** — the firmware builders
+(`firmware/ble/fuzzframe.c`), their host C unit tests (`tests/test_fuzzframe.py`),
+and the Pi-side `FuzzerController` all use the same ids:
+
+| id | case | malformation |
+|---|---|---|
+| `0` | `bad-crc` (default) | well-formed frame whose 2-octet FCS does not match the CRC of the body |
+| `1` | `invalid-frametype` | FCF frame-type field set to `7` (Reserved); FCS otherwise valid |
+| `2` | `oversized-phr` | PHR length field (`200`) larger than the real payload and the legal 127-octet maximum |
+| `3` | `truncated-mac` | FCF declares short dest+src addressing, but the frame is cut off after the sequence number (addressing fields + FCS missing) |
+| `4` | `illegal-sts` | inconsistent STS packet config: SP mode says STS is present (SP2) while the STS length is zero |
+
+> **On-board TX verification is deferred.** The builders and the
+> build→pause→TX→resume dispatch are covered by host C unit tests; radiated-RF
+> verification on hardware is a later healthy-board task (the boards' RF link is
+> currently degraded).
 
 `start()` emits `fuzztx <id>` over the CLI serial link, switches the board to
 LISTENER mode, and drains whatever shows up right after into a structured,
@@ -126,40 +135,6 @@ picker, the single **Fire** button, **Stop**, and the reactions log.
 | `XS` | missing action |
 | `X` | nothing after the prefix |
 | `XS1chan=9` | args must be separated from the opcode by a space |
-
-## Fuzzer (`Z`) — malformed-frame emission
-
-> **Ethics & scope.** The fuzzer is **authorized security-research tooling**.
-> It deliberately transmits **malformed IEEE 802.15.4z frames** to probe how a
-> UWB receiver handles non-conformant input. Use it **only on devices you own
-> or are explicitly authorized to test.** Emission is **opcode-triggered
-> only** — the board never radiates a malformed frame on its own. It is keyed
-> either by the experiment opcode **`XZ1`** (fuzzer start) or by the board
-> serial-CLI command **`fuzztx <case_id>`**; each trigger emits exactly **one**
-> frame and then returns to IDLE. The fuzzer is **half-duplex**: the passive
-> LISTENER2 sniffer is paused while the radio is keyed and resumed afterwards.
-
-The `fuzztx <case_id>` CLI command selects one builder from the fuzz-case
-catalog, emits a single malformed frame, and returns to IDLE. The catalog is a
-**shared contract** — the firmware builders (`firmware/ble/fuzzframe.c`), the C
-unit tests (`tests/test_fuzzframe.py`), and the Pi-side `FuzzerController` all
-use the same ids:
-
-| id | case | malformation |
-|---|---|---|
-| `0` | `bad-crc` | well-formed frame whose 2-octet FCS does not match the CRC of the body |
-| `1` | `invalid-frametype` | FCF frame-type field set to `7` (Reserved); FCS otherwise valid |
-| `2` | `oversized-phr` | PHR length field (`200`) larger than the real payload and the legal 127-octet maximum |
-| `3` | `truncated-mac` | FCF declares short dest+src addressing, but the frame is cut off after the sequence number (addressing fields + FCS missing) |
-| `4` | `illegal-sts` | inconsistent STS packet config: SP mode says STS is present (SP2) while the STS length is zero |
-
-Example: `fuzztx 2` transmits one oversized-PHR frame. An unknown or
-out-of-range case id (e.g. `fuzztx 9`) is rejected and nothing is transmitted.
-
-> **On-board TX verification is deferred.** The builders and the
-> build→pause→TX→resume dispatch are covered by host C unit tests; radiated-RF
-> verification on hardware is a later healthy-board task (the boards' RF link
-> is currently degraded).
 
 ## Round-trip guarantee
 
