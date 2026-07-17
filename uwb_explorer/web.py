@@ -362,6 +362,15 @@ PAGE = """<!doctype html>
   .exp-list li{ font-size:13px; font-variant-numeric:tabular-nums; display:flex; justify-content:space-between; gap:8px; }
   .exp-list .addr{ font-weight:700; }
   .exp-list .where{ color:var(--muted); }
+  .btn-danger{ background:var(--high); color:#fff; }
+  .exp-warn{
+    font-size:12px; font-weight:700; letter-spacing:.02em; color:var(--high);
+    border:1.5px solid var(--high); border-radius:10px; padding:8px 10px;
+  }
+  .exp-select{
+    background:var(--idle); color:var(--fg); border:0; border-radius:10px;
+    padding:9px 10px; font-size:14px;
+  }
 </style>
 </head>
 <body>
@@ -408,6 +417,30 @@ PAGE = """<!doctype html>
       </div>
       <div class="exp-prog"><span id="respStep">0</span>/<span id="respTotal">0</span> combos answered</div>
       <ul class="exp-list" id="respAnswered"></ul>
+    </div>
+
+    <h2 class="exp-h">Fuzzer <span class="exp-sub">— fire a malformed frame, listen for a reaction</span></h2>
+    <div class="cell exp-card">
+      <div class="exp-warn" id="fuzzWarn">
+        Authorized targets / own devices only. Fire fuzz cases ONLY at UWB
+        hardware you own or are explicitly authorized to test — never point
+        this at infrastructure or third-party devices. Each Fire is one
+        deliberate, manually-triggered frame — nothing here auto-fires.
+      </div>
+      <div class="exp-row">
+        <select id="fuzzCase" class="exp-select">
+          <option value="bad-crc">bad-crc</option>
+          <option value="invalid-frametype">invalid-frametype</option>
+          <option value="oversized-phr">oversized-phr</option>
+          <option value="truncated-mac">truncated-mac</option>
+          <option value="illegal-sts">illegal-sts</option>
+        </select>
+        <button id="fuzzFire" class="btn btn-danger">Fire</button>
+        <button id="fuzzStop" class="btn btn-off">Stop</button>
+        <span class="exp-state" id="fuzzState">idle</span>
+      </div>
+      <div class="exp-prog">last case: <span id="fuzzLastCase">–</span></div>
+      <ul class="exp-list" id="fuzzReactions"></ul>
     </div>
   </section>
 
@@ -550,6 +583,46 @@ PAGE = """<!doctype html>
     }).catch(function(){});
   }
   setInterval(respTick, 1000); respTick();
+
+  // --- Fuzzer experiment: ONE deliberate malformed-frame fire, then listen ---
+  // AUTHORIZED TARGETS / OWN DEVICES ONLY — see the always-visible warning in
+  // the panel above. Fire is a single manual button press; nothing here
+  // auto-fires or repeats on its own.
+  var fuzzState = document.getElementById("fuzzState");
+  var fuzzLastCase = document.getElementById("fuzzLastCase");
+  var fuzzReactions = document.getElementById("fuzzReactions");
+  var fuzzCase = document.getElementById("fuzzCase");
+  document.getElementById("fuzzFire").addEventListener("click", function(){
+    postExp("XZ1 case=" + fuzzCase.value)
+      .catch(function(){ fuzzState.textContent = "error"; });
+  });
+  document.getElementById("fuzzStop").addEventListener("click", function(){
+    postExp("XZ0").catch(function(){ fuzzState.textContent = "error"; });
+  });
+  function renderFuzz(st){
+    if(!st){ return; }
+    fuzzState.textContent = st.running ? "fired" : "idle";
+    fuzzLastCase.textContent = st.last_case || "–";
+    var reactions = st.reactions || [];
+    fuzzReactions.innerHTML = "";
+    reactions.forEach(function(r){
+      var li = document.createElement("li");
+      var a = document.createElement("span"); a.className = "addr"; a.textContent = r.type;
+      var w = document.createElement("span"); w.className = "where";
+      w.textContent = r.payload ? ("payload="+r.payload) : ("t="+r.timestamp);
+      li.appendChild(a); li.appendChild(w); fuzzReactions.appendChild(li);
+    });
+  }
+  function fuzzTick(){
+    fetch("/api/experiment/status").then(function(r){ return r.json(); }).then(function(s){
+      if(s.running === "Z"){
+        postExp("XZ?").then(function(p){ renderFuzz(p && p.result); });
+      } else {
+        fuzzState.textContent = "idle";
+      }
+    }).catch(function(){});
+  }
+  setInterval(fuzzTick, 1000); fuzzTick();
 })();
 </script>
 </body>

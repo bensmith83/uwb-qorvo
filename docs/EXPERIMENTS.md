@@ -77,7 +77,41 @@ The verb name doubles as the controller method the dispatcher calls
 | `XT0` | transponder | stop | `{}` |
 | `XB1 payload=deadbeef` | beacon | start | `{"payload": "deadbeef"}` |
 | `XB?` | beacon | status | `{}` |
-| `XZ1` | fuzzer | start | `{}` |
+| `XZ1` | fuzzer | start | `{}` (fires the default case, `bad-crc`) |
+| `XZ1 case=oversized-phr` | fuzzer | start | `{"case": "oversized-phr"}` |
+| `XZ0` | fuzzer | stop | `{}` |
+| `XZ?` | fuzzer | status | `{}` |
+
+## Fuzzer (`Z`) — AUTHORIZED SECURITY-RESEARCH TOOLING, own devices only
+
+**Fire fuzz cases ONLY at UWB hardware you own or are explicitly authorized to
+test. Never point the fuzzer at infrastructure or third-party devices.** The
+fuzzer (`uwb_explorer/experiments/fuzzer.py::FuzzerController`, bead
+uwb-qorvo-1hu.16) transmits one deliberately malformed 802.15.4z frame per
+`start()` call — there is no auto-fire path anywhere in the controller or the
+web panel that drives it; every fire is one manual button press mapping to one
+`XZ1` opcode.
+
+`XZ1`'s optional `case` arg picks a case from the fixed catalog (ordered by
+id — the .15 firmware side, deferred to hardware, uses the same ids):
+
+| id | name |
+|---|---|
+| 0 | `bad-crc` (default) |
+| 1 | `invalid-frametype` |
+| 2 | `oversized-phr` |
+| 3 | `truncated-mac` |
+| 4 | `illegal-sts` |
+
+`start()` emits `fuzztx <id>` over the CLI serial link, switches the board to
+LISTENER mode, and drains whatever shows up right after into a structured,
+timestamped `reactions` log. `status()` reports
+`{"running": bool, "last_case": str | None, "reactions": [...]}`. `stop()`
+sends `stop` and restores IDLE, same as every other experiment controller.
+
+The web dashboard's Fuzzer panel (`uwb_explorer/web.py`) carries a PROMINENT,
+always-visible "Authorized targets / own devices only" note alongside the case
+picker, the single **Fire** button, **Stop**, and the reactions log.
 
 ## Malformed opcodes (rejected)
 

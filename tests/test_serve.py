@@ -74,17 +74,16 @@ def test_scanner_letter_is_the_real_controller_not_a_placeholder():
     assert st["running"] is True
 
 
-def test_placeholder_letters_still_dispatch_without_crashing():
-    # Z has no real controller yet; the placeholder must answer so the web hub
-    # stays fully wired and nothing crashes when it is driven.
-    # (T is now the REAL transponder, B is now the REAL beacon — see the
-    # transponder/beacon tests below.)
+def test_all_experiment_letters_dispatch_without_crashing():
+    # S/T/B/Z are all REAL controllers now (Z became real in bead 1hu.16 — see
+    # the fuzzer tests below) — no placeholder letters remain in EXPERIMENTS,
+    # so just a smoke check that every letter answers start/status cleanly.
     dev, _ = make_device()
     disp = _build(dev)
-    for letter in ("Z",):
+    for letter in ("S", "T", "B", "Z"):
         started = disp.dispatch(parse_command(f"X{letter}1"))
         status = disp.dispatch(parse_command(f"X{letter}?"))
-        assert isinstance(started, dict)
+        assert isinstance(started, dict) or started is None
         assert isinstance(status, dict)
 
 
@@ -225,3 +224,90 @@ def test_scanner_and_transponder_stay_real_alongside_the_beacon():
     assert "phase" not in s_st and s_st["running"] is True   # scanner still real
     assert "phase" not in t_st and t_st["running"] is True   # transponder real
     assert "phase" not in b_st and b_st["running"] is True   # beacon now real
+
+
+# --- fuzzer web view (bead uwb-qorvo-1hu.16) ----------------------------------
+# Mirrors the scanner/transponder/beacon wiring above: build_dispatcher must
+# register a REAL FuzzerController on letter "Z" (bead 1hu.16 ships it), not a
+# placeholder. AUTHORIZED SECURITY-RESEARCH TOOLING: fires ONE malformed frame
+# per deliberate start(), then switches to LISTENER to capture any reaction —
+# no PHY sweep, no "total"/"step"; "running"/"last_case"/"reactions" is the
+# whole status shape (see uwb_explorer/experiments/fuzzer.py).
+# SCOPE GUARD: the live board-loop pause/resume handoff (half-duplex
+# arbitration while the fuzzer fires + listens on the shared serial port)
+# needs real hardware and is a deliberate follow-up — NOT exercised here.
+# The .15 firmware's actual malformed-frame TX is deferred to hardware too —
+# here we only assert the right `fuzztx <id>` wire command is sent.
+
+
+def test_dispatch_xz1_drives_the_real_fuzzer():
+    dev, ser = make_device()
+    disp = _build(dev)
+    disp.dispatch(parse_command("XZ1"))   # fire the default case (bad-crc)
+    tx = bytes(ser.tx)
+    assert b"fuzztx 0\r\n" in tx    # the fixed catalog's default case id
+    assert b"listener\r\n" in tx    # switches to LISTENER to capture reactions
+
+
+def test_dispatch_xz_status_returns_the_fuzzer_status_dict():
+    dev, _ = make_device()
+    disp = _build(dev)
+    disp.dispatch(parse_command("XZ1"))
+    st = disp.dispatch(parse_command("XZ?"))
+    for key in ("running", "last_case", "reactions"):
+        assert key in st
+    assert st["running"] is True
+    assert st["last_case"] == "bad-crc"
+    assert isinstance(st["reactions"], list)
+    json.dumps(st)   # JSON-able for the web status endpoint
+
+
+def test_fuzzer_letter_is_the_real_controller_not_a_placeholder():
+    # the placeholder's status is {"exp":..., "phase":"unimplemented"}; the
+    # real fuzzer reports concrete case/reactions state instead.
+    dev, _ = make_device()
+    disp = _build(dev)
+    disp.dispatch(parse_command("XZ1"))
+    st = disp.dispatch(parse_command("XZ?"))
+    assert "phase" not in st
+    assert "last_case" in st
+    assert st["running"] is True
+
+
+def test_dispatch_xz1_honors_the_case_arg():
+    dev, ser = make_device()
+    disp = _build(dev)
+    disp.dispatch(parse_command("XZ1 case=illegal-sts"))
+    st = disp.dispatch(parse_command("XZ?"))
+    assert st["last_case"] == "illegal-sts"
+    assert b"fuzztx 4\r\n" in bytes(ser.tx)
+
+
+def test_dispatch_xz0_stops_the_fuzzer_and_restores_idle():
+    dev, ser = make_device()
+    disp = _build(dev)
+    disp.dispatch(parse_command("XZ1"))
+    disp.dispatch(parse_command("XZ0"))
+    assert b"stop\r\n" in bytes(ser.tx)
+    st = disp.dispatch(parse_command("XZ?"))
+    assert st["running"] is False
+
+
+def test_scanner_transponder_and_beacon_stay_real_alongside_the_fuzzer():
+    # wiring the real fuzzer must NOT regress the already-shipped scanner/
+    # transponder/beacon: S still sweeps, T still answers, B still beacons,
+    # Z now really fires a malformed frame too.
+    dev, ser = make_scripted({"uwbcfg": UWBCFG_REPLY})
+    disp = _build(dev)
+    disp.dispatch(parse_command("XS1"))
+    s_st = disp.dispatch(parse_command("XS?"))
+    disp.dispatch(parse_command("XT1"))
+    t_st = disp.dispatch(parse_command("XT?"))
+    disp.dispatch(parse_command("XB1"))
+    b_st = disp.dispatch(parse_command("XB?"))
+    disp.dispatch(parse_command("XZ1"))
+    z_st = disp.dispatch(parse_command("XZ?"))
+    assert "phase" not in s_st and s_st["running"] is True   # scanner still real
+    assert "phase" not in t_st and t_st["running"] is True   # transponder real
+    assert "phase" not in b_st and b_st["running"] is True   # beacon still real
+    assert "phase" not in z_st and z_st["running"] is True   # fuzzer now real
