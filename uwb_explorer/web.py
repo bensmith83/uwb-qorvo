@@ -164,16 +164,31 @@ def recover_arbitration(arbiter) -> None:
 def board_loop(state: DetectorState, stop: threading.Event,
                sweep: bool = False, interval: float = 1.0,
                codes=(9, 10, 11, 12), on_connect=None, arbiter=None,
-               pump=None) -> None:
+               pump=None, antenna_delay_store=None) -> None:
     """Keep a board listening and fold its counters into `state` forever.
 
     Retries connecting so you can boot the unit and plug the board in later
     (the con workflow). Optional preamble-code sweep widens what it can hear.
     Imports serial bits lazily so the HTTP layer stays importable/testable on
     a host with no pyserial hardware access.
+
+    `antenna_delay_store` (bead uwb-qorvo-av8) defaults to the real
+    uwb_explorer.antenna_delay_store module and is looked up by the board's
+    USB serial (parsed from its by-id port path) on every (re)connect; if a
+    calibrated delay was previously persisted for this board (see
+    tools/calibrate_antenna_delay.py), it's re-applied via
+    Device.set_antenna_delay() so calibration survives restarts/reconnects.
+    Injectable for tests; a test double only needs a `load_delay(serial)`
+    method.
     """
     from .device import Device, _UWBCFG_ORDER
     from .serialport import find_cli_port, open_cli
+    from . import antenna_delay_store as _antenna_delay_store_module
+
+    # Serial parsing (serial_from_port) is pure/fixed and always comes from
+    # the real module. Only the lookup itself (load_delay) is injectable —
+    # a test double only needs to implement `load_delay(serial)`.
+    store = antenna_delay_store if antenna_delay_store is not None else _antenna_delay_store_module
 
     while not stop.is_set():
         port = find_cli_port()
@@ -192,6 +207,19 @@ def board_loop(state: DetectorState, stop: threading.Event,
                 ser.close()
                 stop.wait(1.5)
                 continue
+            # Auto-apply a previously-calibrated antenna delay for THIS board
+            # (bead av8). Best-effort only: the underlying ANTDELAY wire
+            # command is hardware-unconfirmed (see device.py's
+            # set_antenna_delay caveat), and a stale/broken store must never
+            # be a reason to fail a connect — any failure here is swallowed.
+            try:
+                serial = _antenna_delay_store_module.serial_from_port(port)
+                if serial is not None:
+                    ticks = store.load_delay(serial)
+                    if ticks is not None:
+                        dev.set_antenna_delay(ticks)
+            except Exception:
+                pass
             cfg = dev.get_uwbcfg() or {}
             state.set_config(channel=cfg.get("CHAN"), pcode=cfg.get("TXCODE"))
             state.set_status("live")

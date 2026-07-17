@@ -505,3 +505,164 @@ def test_recover_arbitration_resets_handoff_and_allows_fresh_experiment():
 def test_recover_arbitration_is_a_noop_when_arbiter_is_none():
     # board_loop may run without arbitration configured; recovery must be safe.
     webmod.recover_arbitration(None)   # must not raise
+
+
+# --- auto-apply a persisted antenna delay on connect (bead uwb-qorvo-av8) ----
+# tools/calibrate_antenna_delay.py persists a calibrated delay keyed by board
+# USB serial (uwb_explorer/antenna_delay_store.py). board_loop must look that
+# serial up (parsed from the by-id port path) on every (re)connect and, if a
+# delay is stored, re-apply it via Device.set_antenna_delay() — best-effort,
+# since the underlying ANTDELAY wire command is HARDWARE-UNCONFIRMED (see
+# device.py). A missing/None lookup must be a silent no-op, and a raising
+# store or a raising set_antenna_delay must never crash the loop.
+
+_BY_ID_PORT = "/dev/serial/by-id/usb-Nordic_Semiconductor_DWM3001CDK_ABC123-if00"
+
+
+class _RecordingDeviceForDelay:
+    """Board double that detects/configures normally and records any
+    set_antenna_delay() call it receives."""
+
+    def __init__(self, ser):
+        self.applied_delay = None
+        self.set_antenna_delay_calls = 0
+
+    def detect(self):
+        return True
+
+    def get_uwbcfg(self):
+        return {"CHAN": 9, "TXCODE": 9}
+
+    def stop(self):
+        pass
+
+    def start_listener(self):
+        pass
+
+    def set_antenna_delay(self, ticks):
+        self.set_antenna_delay_calls += 1
+        self.applied_delay = ticks
+
+
+class _RaisingSetAntennaDelayDevice(_RecordingDeviceForDelay):
+    def set_antenna_delay(self, ticks):
+        super().set_antenna_delay(ticks)
+        raise OSError("board rejected ANTDELAY (unconfirmed wire command)")
+
+
+def _one_shot_board_loop(monkeypatch, device_cls, store, port=_BY_ID_PORT):
+    """Run board_loop for exactly one connect, returning the created device.
+
+    Reuses the on_connect seam (already called once per successful connect,
+    before the inner listener loop) to stop the loop immediately after the
+    connect-time auto-apply logic has had a chance to run.
+    """
+    created = []
+
+    def _make_device(ser):
+        d = device_cls(ser)
+        created.append(d)
+        return d
+
+    monkeypatch.setattr(sp, "find_cli_port", lambda: port)
+    monkeypatch.setattr(sp, "open_cli", lambda p: _FakeSerial())
+    monkeypatch.setattr(devmod, "Device", _make_device)
+
+    stop = threading.Event()
+    state = DetectorState()
+    webmod.board_loop(
+        state, stop, interval=0.0,
+        on_connect=lambda dev: stop.set(),
+        antenna_delay_store=store,
+    )
+    assert len(created) == 1
+    return created[0]
+
+
+class _StubStore:
+    def __init__(self, ticks=None, serials_seen=None):
+        self._ticks = ticks
+        self._serials_seen = serials_seen if serials_seen is not None else []
+
+    def load_delay(self, serial):
+        self._serials_seen.append(serial)
+        return self._ticks
+
+
+class _RaisingStore:
+    def load_delay(self, serial):
+        raise RuntimeError("store backend exploded")
+
+
+def test_board_loop_applies_stored_delay_on_connect(monkeypatch):
+    seen = []
+    store = _StubStore(ticks=16449, serials_seen=seen)
+    dev = _one_shot_board_loop(monkeypatch, _RecordingDeviceForDelay, store)
+    assert dev.set_antenna_delay_calls == 1
+    assert dev.applied_delay == 16449
+    # the serial passed to the store must be parsed out of the by-id port
+    assert seen == ["ABC123"]
+
+
+def test_board_loop_does_not_apply_when_no_stored_delay(monkeypatch):
+    store = _StubStore(ticks=None)
+    dev = _one_shot_board_loop(monkeypatch, _RecordingDeviceForDelay, store)
+    assert dev.set_antenna_delay_calls == 0
+    assert dev.applied_delay is None
+
+
+def test_board_loop_skips_lookup_for_a_non_by_id_port(monkeypatch):
+    # auto-discovery can hand back a bare /dev/ttyACM0 with no embedded
+    # serial; there's nothing to key a stored delay off of, so no lookup.
+    seen = []
+    store = _StubStore(ticks=16449, serials_seen=seen)
+    dev = _one_shot_board_loop(monkeypatch, _RecordingDeviceForDelay, store,
+                                port="/dev/ttyACM0")
+    assert dev.set_antenna_delay_calls == 0
+    assert seen == []
+
+
+def test_board_loop_survives_set_antenna_delay_raising(monkeypatch):
+    # the ANTDELAY wire command is hardware-unconfirmed; a board that
+    # rejects/errors on it must not kill the loop or the connect.
+    store = _StubStore(ticks=16449)
+    dev = _one_shot_board_loop(monkeypatch, _RaisingSetAntennaDelayDevice, store)
+    assert dev.set_antenna_delay_calls == 1   # it was attempted...
+    assert dev.applied_delay == 16449          # ...and the loop kept going
+
+
+def test_board_loop_survives_a_raising_store(monkeypatch):
+    # a broken/exploding store lookup must also never crash the connect.
+    dev = _one_shot_board_loop(monkeypatch, _RecordingDeviceForDelay, _RaisingStore())
+    assert dev.set_antenna_delay_calls == 0
+
+
+def test_board_loop_uses_the_real_store_by_default(monkeypatch, tmp_path):
+    # omitting antenna_delay_store must fall back to the real
+    # uwb_explorer.antenna_delay_store module rather than requiring every
+    # caller (production board_loop() calls included) to wire one up.
+    import uwb_explorer.antenna_delay_store as ads
+
+    store_path = tmp_path / "antenna_delays.json"
+    ads.save_delay("ABC123", 16480, path=store_path)
+    # point the module's default path at our tmp_path store instead of a
+    # real home dir, so this stays hardware/filesystem-clean.
+    monkeypatch.setattr(ads, "DEFAULT_STORE_PATH", store_path)
+
+    created = []
+
+    def _make_device(ser):
+        d = _RecordingDeviceForDelay(ser)
+        created.append(d)
+        return d
+
+    monkeypatch.setattr(sp, "find_cli_port", lambda: _BY_ID_PORT)
+    monkeypatch.setattr(sp, "open_cli", lambda p: _FakeSerial())
+    monkeypatch.setattr(devmod, "Device", _make_device)
+
+    stop = threading.Event()
+    state = DetectorState()
+    webmod.board_loop(state, stop, interval=0.0, on_connect=lambda dev: stop.set())
+
+    assert len(created) == 1
+    assert created[0].applied_delay == 16480
